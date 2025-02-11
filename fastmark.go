@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"image"
 	"image/color"
@@ -24,6 +25,9 @@ var (
 	currentImage   *giu.Texture
 	selectedIndex  int
 	currentRegions []Region
+
+	drawingRect  bool
+	drawingStart image.Point
 
 	directory string
 	splitPos  = float32(200)
@@ -128,6 +132,7 @@ func selectFile(i int) {
 	file := files[i]
 	selectedIndex = i
 	fileLabels[i].Selected(true)
+	drawingRect = false
 	drawFile(file)
 }
 
@@ -187,6 +192,29 @@ func loop() {
 						max := pos.Add(image.Point{X: imageWidth, Y: imageHeight})
 						canvas.AddImage(currentImage, pos, max)
 					}
+					// Check if the user has stopped drawing
+					if drawingRect {
+						end := giu.GetMousePos().Sub(pos)
+						if !giu.IsMouseDown(giu.MouseButtonLeft) {
+							newRegion := Region{
+								xMid:   float64(drawingStart.X+end.X) / 2 / float64(imageWidth),
+								yMid:   float64(drawingStart.Y+end.Y) / 2 / float64(imageHeight),
+								width:  float64(end.X-drawingStart.X) / float64(imageWidth),
+								height: float64(end.Y-drawingStart.Y) / float64(imageHeight),
+								index:  1, // TODO: Make this configurable
+							}
+							currentRegions = append(currentRegions, newRegion)
+							log.Printf("Added new region %#v", newRegion)
+							drawingRect = false
+						}
+						canvas.AddRect(pos.Add(drawingStart), pos.Add(end), color.RGBA{255, 0, 0, 255}, 0, 0, 2)
+					} else if giu.IsMouseDown(giu.MouseButtonLeft) {
+						// Get the current screen position of the cursor
+						scr := giu.GetMousePos().Sub(pos)
+						drawingRect = true
+						drawingStart = image.Point{X: int(scr.X), Y: int(scr.Y)}
+					}
+
 					for _, region := range currentRegions {
 						w := int(float32(region.width) * float32(imageWidth))
 						h := int(float32(region.height) * float32(imageHeight))
@@ -196,6 +224,9 @@ func loop() {
 						canvas.AddRect(pos.Add(image.Point{X: x, Y: y}), pos.Add(image.Point{X: x + w, Y: y + h}), color, 0, 0, 2)
 					}
 				}),
+				giu.Event().OnClick(giu.MouseButtonLeft, func() {
+					log.Printf("Click")
+				}),
 			),
 		),
 	)
@@ -203,12 +234,16 @@ func loop() {
 	if giu.IsKeyPressed(giu.KeyDown) || giu.IsKeyPressed(giu.KeyJ) {
 		selectFile(selectedIndex + 1)
 	}
-	if giu.IsKeyPressed(giu.KeyUp) {
+	if giu.IsKeyPressed(giu.KeyUp) || giu.IsKeyPressed(giu.KeyK) {
 		selectFile(selectedIndex - 1)
 	}
+
 }
 
 func main() {
+	flag.StringVar(&directory, "directory", "", "Directory to load images from")
+	flag.Parse()
+
 	wnd := giu.NewMasterWindow("Fast Mark Image Tagging", 1024, 768, 0)
 
 	updateFiles()
