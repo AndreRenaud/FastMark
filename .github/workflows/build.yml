@@ -1,0 +1,43 @@
+name: build
+
+on:
+  push:
+    branches:
+      - 'main'
+    tags:
+      - 'v*'
+  pull_request:
+
+jobs:
+  Building:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # https://github.com/actions/virtual-environments#available-environments
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout out source code
+        uses: actions/checkout@v4
+
+      - if: startsWith(matrix.os,'ubuntu')
+        name: Set up LibGL, Mesa & X11 libraries
+        run: |
+          sudo apt-get --allow-releaseinfo-change update
+          sudo apt-get install -y libgtk-3-dev libasound2-dev libxxf86vm-dev
+      - name: Set up Go environment
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.23.x
+        id: go
+
+      - name: run go get
+        run: go get -v -t ./...
+      - name: build
+        run: |
+            go build -v -o fastmark-${{ matrix.os }} .
+      - name: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: fastmark-${{ matrix.os }}
+          path: fastmark-${{ matrix.os }}
