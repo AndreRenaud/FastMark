@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -28,9 +29,13 @@ var (
 
 	drawingRect  bool
 	drawingStart image.Point
+	drawingIndex int
 
 	directory string
-	splitPos  = float32(200)
+	splitPos  = float32(300)
+
+	// TODO: Load these from a file?
+	labels = []string{"rat", "mouse", "stoat", "possum", "dog"}
 )
 
 type Region struct {
@@ -40,6 +45,13 @@ type Region struct {
 	height float64
 
 	index int
+}
+
+func labelName(index int) string {
+	if index >= 0 && index < len(labels) {
+		return labels[index]
+	}
+	return "unknown"
 }
 
 func parseLabelData(filename string) []Region {
@@ -55,7 +67,7 @@ func parseLabelData(filename string) []Region {
 	for scanner.Scan() {
 		columns := strings.Fields(scanner.Text())
 		if len(columns) != 5 {
-			log.Printf("Invalid line: %s", scanner.Text())
+			log.Printf("Invalid line: %s in %s", scanner.Text(), filename)
 			continue
 		}
 		region := Region{}
@@ -64,6 +76,11 @@ func parseLabelData(filename string) []Region {
 		region.yMid, err = strconv.ParseFloat(columns[2], 64)
 		region.width, err = strconv.ParseFloat(columns[3], 64)
 		region.height, err = strconv.ParseFloat(columns[4], 64)
+
+		if !region.IsValid() {
+			log.Printf("Invalid region: %#v in %s", columns, filename)
+			continue
+		}
 		retval = append(retval, region)
 	}
 
@@ -79,13 +96,13 @@ func saveRegions() {
 	ext := filepath.Ext(filename)
 	labelFile := filepath.Join(directory, "../labels/", strings.TrimSuffix(filename, ext)+".txt")
 	log.Printf("Saving regions to %s", labelFile)
-	file, err := os.OpenFile(labelFile, os.O_CREATE|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(labelFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		log.Printf("Error creating file %s: %s", filename, err)
 	}
 	defer file.Close()
-	for _, err := range currentRegions {
-		fmt.Fprintf(file, "%d %f %f %f %f\n", err.index, err.xMid, err.yMid, err.width, err.height)
+	for _, region := range currentRegions {
+		fmt.Fprintf(file, "%d %f %f %f %f\n", region.index, region.xMid, region.yMid, region.width, region.height)
 	}
 }
 
@@ -106,6 +123,22 @@ func (r Region) Color() color.RGBA {
 	default:
 		return color.RGBA{128, 128, 128, 255}
 	}
+}
+
+func (r Region) IsValid() bool {
+	if r.width <= 0 || r.height <= 0 || r.width > 1 || r.height > 1 {
+		return false
+	}
+	if r.xMid < 0 || r.xMid > 1 || r.yMid < 0 || r.yMid > 1 {
+		return false
+	}
+	if r.xMid-r.width/2 < 0 || r.xMid+r.width/2 > 1 {
+		return false
+	}
+	if r.yMid-r.height/2 < 0 || r.yMid+r.height/2 > 1 {
+		return false
+	}
+	return true
 }
 
 func drawFile(filename string) {
@@ -163,11 +196,13 @@ func updateFiles() {
 		log.Printf("Error listing files in %s: %s", directory, err)
 	} else {
 		for _, m := range match {
-			if strings.HasSuffix(m, ".png") || strings.HasSuffix(m, ".jpg") {
+			ext := filepath.Ext(m)
+			if ext == ".jpg" || ext == ".jpeg" || ext == ".png" {
 				files = append(files, filepath.Base(m))
 			}
 		}
 	}
+	slices.Sort(files)
 	fileRows = make([]*giu.TableRowWidget, len(files))
 	fileLabels = make([]*giu.SelectableWidget, len(files))
 	for i, file := range files {
@@ -178,6 +213,35 @@ func updateFiles() {
 		fileRows[i] = giu.TableRow(fileLabels[i])
 	}
 	selectFile(0)
+}
+
+func getClosestRegion(click image.Point, imageWidth int, imageHeight int) int {
+	for i, region := range currentRegions {
+		w := int(float32(region.width) * float32(imageWidth))
+		h := int(float32(region.height) * float32(imageHeight))
+		x := int(float32(region.xMid)*float32(imageWidth)) - w/2
+		y := int(float32(region.yMid)*float32(imageHeight)) - h/2
+		if click.X >= x && click.X <= x+w && click.Y >= y && click.Y <= y+h {
+			log.Printf("Clicked on region %d", i)
+			return i
+		}
+	}
+
+	// If we're close to a region, and it's small, then assume we just missed and select it
+	for i, region := range currentRegions {
+		w := int(float32(region.width) * float32(imageWidth))
+		h := int(float32(region.height) * float32(imageHeight))
+		x := int(float32(region.xMid)*float32(imageWidth)) - w/2
+		y := int(float32(region.yMid)*float32(imageHeight)) - h/2
+		if w > 10 || h > 10 {
+			continue
+		}
+		if click.X >= x-5 && click.X <= x+w+5 && click.Y >= y-5 && click.Y <= y+h+5 {
+			log.Printf("Clicked near region %d", i)
+			return i
+		}
+	}
+	return -1
 }
 
 func loop() {
@@ -200,7 +264,8 @@ func loop() {
 					giu.Button("Change Directory").OnClick(selectDirectory),
 					giu.Label(directory),
 				),
-				giu.Label(file),
+				giu.Labelf("Current file: %s", file),
+				giu.Labelf("Drawing label: %d %s (Press 1-9 to select new type)\n", drawingIndex, labelName(drawingIndex)),
 				giu.Custom(func() {
 					canvas := giu.GetCanvas()
 					pos := giu.GetCursorScreenPos()
@@ -220,19 +285,36 @@ func loop() {
 								yMid:   float64(drawingStart.Y+end.Y) / 2 / float64(imageHeight),
 								width:  float64(end.X-drawingStart.X) / float64(imageWidth),
 								height: float64(end.Y-drawingStart.Y) / float64(imageHeight),
-								index:  1, // TODO: Make this configurable
+								index:  drawingIndex, // TODO: Make this configurable
 							}
-							currentRegions = append(currentRegions, newRegion)
-							log.Printf("Added new region %#v", newRegion)
-							saveRegions()
+							if !newRegion.IsValid() {
+								log.Printf("Invalid region: %#v", newRegion)
+							} else {
+								currentRegions = append(currentRegions, newRegion)
+								log.Printf("Added new region %#v", newRegion)
+								saveRegions()
+							}
 							drawingRect = false
 						}
 						canvas.AddRect(pos.Add(drawingStart), pos.Add(end), color.RGBA{255, 0, 0, 255}, 0, 0, 2)
 					} else if giu.IsMouseDown(giu.MouseButtonLeft) {
 						// Get the current screen position of the cursor
 						scr := giu.GetMousePos().Sub(pos)
-						drawingRect = true
-						drawingStart = image.Point{X: int(scr.X), Y: int(scr.Y)}
+						if scr.X >= 0 && scr.X <= imageWidth && scr.Y >= 0 && scr.Y <= imageHeight {
+							drawingRect = true
+							drawingStart = scr
+						}
+					}
+
+					if giu.IsMouseClicked(giu.MouseButtonRight) {
+						// Find the region that was clicked
+						click := giu.GetMousePos().Sub(pos)
+						index := getClosestRegion(click, imageWidth, imageHeight)
+						if index >= 0 {
+							currentRegions = append(currentRegions[:index], currentRegions[index+1:]...)
+							log.Printf("Removed region %d: %#v", index, currentRegions)
+							saveRegions()
+						}
 					}
 
 					for _, region := range currentRegions {
@@ -242,10 +324,15 @@ func loop() {
 						y := int(float32(region.yMid)*float32(imageHeight)) - h/2
 						color := region.Color()
 						canvas.AddRect(pos.Add(image.Point{X: x, Y: y}), pos.Add(image.Point{X: x + w, Y: y + h}), color, 0, 0, 2)
+
+						if !giu.IsMouseDown(giu.MouseButtonLeft) {
+							mouse := giu.GetMousePos()
+							relMouse := mouse.Sub(pos)
+							if relMouse.X >= x && relMouse.X <= x+w && relMouse.Y >= y && relMouse.Y <= y+h {
+								canvas.AddText(mouse.Add(image.Point{0, -20}), color, labelName(region.index))
+							}
+						}
 					}
-				}),
-				giu.Event().OnClick(giu.MouseButtonLeft, func() {
-					log.Printf("Click")
 				}),
 			),
 		),
@@ -257,7 +344,11 @@ func loop() {
 	if giu.IsKeyPressed(giu.KeyUp) || giu.IsKeyPressed(giu.KeyK) {
 		selectFile(selectedIndex - 1)
 	}
-
+	for i := 0; i < 9; i++ {
+		if giu.IsKeyPressed(giu.Key(int(giu.Key0) + i)) {
+			drawingIndex = i
+		}
+	}
 }
 
 func main() {
