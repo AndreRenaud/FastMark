@@ -70,6 +70,25 @@ func parseLabelData(filename string) []Region {
 	return retval
 }
 
+func saveRegions() {
+	if selectedIndex < 0 || selectedIndex >= len(files) {
+		log.Printf("Invalid file index %d", selectedIndex)
+		return
+	}
+	filename := files[selectedIndex]
+	ext := filepath.Ext(filename)
+	labelFile := filepath.Join(directory, "../labels/", strings.TrimSuffix(filename, ext)+".txt")
+	log.Printf("Saving regions to %s", labelFile)
+	file, err := os.OpenFile(labelFile, os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Printf("Error creating file %s: %s", filename, err)
+	}
+	defer file.Close()
+	for _, err := range currentRegions {
+		fmt.Fprintf(file, "%d %f %f %f %f\n", err.index, err.xMid, err.yMid, err.width, err.height)
+	}
+}
+
 func (r Region) Color() color.RGBA {
 	switch r.index {
 	case 1:
@@ -205,6 +224,7 @@ func loop() {
 							}
 							currentRegions = append(currentRegions, newRegion)
 							log.Printf("Added new region %#v", newRegion)
+							saveRegions()
 							drawingRect = false
 						}
 						canvas.AddRect(pos.Add(drawingStart), pos.Add(end), color.RGBA{255, 0, 0, 255}, 0, 0, 2)
