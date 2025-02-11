@@ -32,7 +32,11 @@ jobs:
         id: go
 
       - name: run go get
-        run: go get -v -t -d ./...
+        run: go get -v -t ./...
       - name: build
         run: |
-            go build -o fastmark .
+            go build -v -o fastmark-${{ matrix.os }} .
+      - name: upload
+        uses: actions/upload-artifact@v2
+        with:
+          name: fastmark-${{ matrix.os }}
