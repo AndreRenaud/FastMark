@@ -34,8 +34,7 @@ var (
 	directory string
 	splitPos  = float32(300)
 
-	// TODO: Load these from a file?
-	labels = []string{"rat", "mouse", "stoat", "possum", "dog"}
+	labels []string
 )
 
 type Region struct {
@@ -167,7 +166,6 @@ func selectDirectory() {
 	}
 	directory = newDirectory
 	updateFiles()
-
 }
 
 func selectFile(i int) {
@@ -212,6 +210,20 @@ func updateFiles() {
 		})
 		fileRows[i] = giu.TableRow(fileLabels[i])
 	}
+
+	labelsFile := filepath.Join(directory, "../labels.txt")
+	file, err := os.Open(labelsFile)
+	if err != nil {
+		log.Printf("Error opening labels file %s: %s", labelsFile, err)
+	} else {
+		defer file.Close()
+		scanner := bufio.NewScanner(file)
+		labels = nil
+		for scanner.Scan() {
+			labels = append(labels, scanner.Text())
+		}
+	}
+
 	selectFile(0)
 }
 
@@ -280,6 +292,10 @@ func loop() {
 					if drawingRect {
 						end := giu.GetMousePos().Sub(pos)
 						if !giu.IsMouseDown(giu.MouseButtonLeft) {
+							// Make sure width & height are positive
+							if drawingStart.X > end.X || drawingStart.Y > end.Y {
+								drawingStart, end = end, drawingStart
+							}
 							newRegion := Region{
 								xMid:   float64(drawingStart.X+end.X) / 2 / float64(imageWidth),
 								yMid:   float64(drawingStart.Y+end.Y) / 2 / float64(imageHeight),
