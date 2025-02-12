@@ -13,6 +13,9 @@ import (
 	"strconv"
 	"strings"
 
+	_ "image/jpeg"
+	_ "image/png"
+
 	"github.com/sqweek/dialog"
 
 	"github.com/AllenDang/giu"
@@ -153,13 +156,24 @@ func (r Region) IsValid() bool {
 	return true
 }
 
+func loadImage(filename string) (image.Image, error) {
+	f, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	img, _, err := image.Decode(f)
+	return img, nil
+}
+
 func drawFile(filename string) {
 	currentImage = nil
 	fullFilename := filepath.Join(directory, filename)
-	if rgba, err := giu.LoadImage(fullFilename); err != nil {
+
+	if img, err := loadImage(fullFilename); err != nil {
 		log.Printf("Error loading image %s: %s", filename, err)
 	} else {
-		giu.EnqueueNewTextureFromRgba(rgba, func(t *giu.Texture) {
+		giu.EnqueueNewTextureFromRgba(img, func(t *giu.Texture) {
 			currentImage = t
 		})
 	}
