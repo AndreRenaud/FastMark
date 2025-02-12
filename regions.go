@@ -41,11 +41,27 @@ func LoadRegionList(filename string) (RegionList, error) {
 			continue
 		}
 		region := Region{}
-		region.index, err = strconv.Atoi(columns[0])
-		region.xMid, err = strconv.ParseFloat(columns[1], 64)
-		region.yMid, err = strconv.ParseFloat(columns[2], 64)
-		region.width, err = strconv.ParseFloat(columns[3], 64)
-		region.height, err = strconv.ParseFloat(columns[4], 64)
+		var err error
+		if region.index, err = strconv.Atoi(columns[0]); err != nil {
+			log.Printf("Invalid index: %s in %s", columns[0], filename)
+			continue
+		}
+		if region.xMid, err = strconv.ParseFloat(columns[1], 64); err != nil {
+			log.Printf("Invalid xMid: %s in %s", columns[1], filename)
+			continue
+		}
+		if region.yMid, err = strconv.ParseFloat(columns[2], 64); err != nil {
+			log.Printf("Invalid yMid: %s in %s", columns[2], filename)
+			continue
+		}
+		if region.width, err = strconv.ParseFloat(columns[3], 64); err != nil {
+			log.Printf("Invalid width: %s in %s", columns[3], filename)
+			continue
+		}
+		if region.height, err = strconv.ParseFloat(columns[4], 64); err != nil {
+			log.Printf("Invalid height: %s in %s", columns[4], filename)
+			continue
+		}
 
 		if !region.IsValid() {
 			log.Printf("Invalid region: %#v in %s", columns, filename)
