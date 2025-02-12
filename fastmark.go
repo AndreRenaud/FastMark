@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 
 	_ "image/jpeg"
@@ -28,7 +27,7 @@ var (
 
 	currentImage   *giu.Texture
 	selectedIndex  int
-	currentRegions []Region
+	currentRegions RegionList
 
 	drawingRect  bool
 	drawingStart image.Point
@@ -42,118 +41,11 @@ var (
 	wnd *giu.MasterWindow
 )
 
-type Region struct {
-	xMid   float64
-	yMid   float64
-	width  float64
-	height float64
-
-	index int
-}
-
 func labelName(index int) string {
 	if index >= 0 && index < len(labels) {
 		return labels[index]
 	}
 	return "unknown"
-}
-
-func parseLabelData(filename string) []Region {
-	file, err := os.Open(filename)
-	if err != nil {
-		log.Printf("Error opening file %s: %s", filename, err)
-		return nil
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	var retval []Region
-	for scanner.Scan() {
-		columns := strings.Fields(scanner.Text())
-		if len(columns) != 5 {
-			log.Printf("Invalid line: %s in %s", scanner.Text(), filename)
-			continue
-		}
-		region := Region{}
-		region.index, err = strconv.Atoi(columns[0])
-		region.xMid, err = strconv.ParseFloat(columns[1], 64)
-		region.yMid, err = strconv.ParseFloat(columns[2], 64)
-		region.width, err = strconv.ParseFloat(columns[3], 64)
-		region.height, err = strconv.ParseFloat(columns[4], 64)
-
-		if !region.IsValid() {
-			log.Printf("Invalid region: %#v in %s", columns, filename)
-			continue
-		}
-		retval = append(retval, region)
-	}
-
-	return retval
-}
-
-func saveRegions() {
-	if selectedIndex < 0 || selectedIndex >= len(files) {
-		log.Printf("Invalid file index %d", selectedIndex)
-		return
-	}
-	filename := files[selectedIndex]
-	ext := filepath.Ext(filename)
-	labelFile := filepath.Join(directory, "../labels/", strings.TrimSuffix(filename, ext)+".txt")
-	log.Printf("Saving regions to %s", labelFile)
-	file, err := os.OpenFile(labelFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		log.Printf("Error creating file %s: %s", filename, err)
-	}
-	defer file.Close()
-	for _, region := range currentRegions {
-		fmt.Fprintf(file, "%d %f %f %f %f\n", region.index, region.xMid, region.yMid, region.width, region.height)
-	}
-}
-
-func (r Region) Color() color.Color {
-	switch r.index {
-	case 0:
-		return color.RGBA{255, 128, 64, 255}
-	case 1:
-		return color.RGBA{255, 0, 0, 255}
-	case 2:
-		return color.RGBA{0, 255, 0, 255}
-	case 3:
-		return color.RGBA{0, 0, 255, 255}
-	case 4:
-		return color.RGBA{255, 255, 0, 255}
-	case 5:
-		return color.RGBA{255, 0, 255, 255}
-	case 6:
-		return color.RGBA{0, 255, 255, 255}
-	default:
-		return color.YCbCr{255, uint8(r.index * 16), uint8(r.index * 16)}
-	}
-}
-
-func (r Region) IsValid() bool {
-	if r.width <= 0 || r.height <= 0 || r.width > 1 || r.height > 1 {
-		log.Printf("Invalid width/height: %#v", r)
-		return false
-	}
-	if r.xMid < 0 || r.xMid > 1 || r.yMid < 0 || r.yMid > 1 {
-		log.Printf("Invalid x/y mid: %#v", r)
-		return false
-	}
-	if r.xMid-r.width/2 < 0 || r.xMid+r.width/2 > 1 {
-		log.Printf("Invalid x range: %#v", r)
-		return false
-	}
-	if r.yMid-r.height/2 < 0 || r.yMid+r.height/2 > 1 {
-		log.Printf("Invalid y range: %#v %f %f", r, r.yMid-r.height/2, r.yMid+r.height/2)
-		return false
-	}
-
-	// TODO: Is this legit? These are too small to be useful
-	if r.width < 0.001 || r.height < 0.001 {
-		return false
-	}
-	return true
 }
 
 func loadImage(filename string) (image.Image, error) {
@@ -182,7 +74,11 @@ func drawFile(filename string) {
 
 	labelFile := filepath.Join(directory, "../labels/", strings.TrimSuffix(filename, ext)+".txt")
 
-	currentRegions = parseLabelData(labelFile)
+	var err error
+	currentRegions, err = LoadRegionList(labelFile)
+	if err != nil {
+		log.Printf("Error loading regions for %s: %s", filename, err)
+	}
 }
 
 func selectDirectory() {
@@ -255,7 +151,7 @@ func updateFiles() {
 }
 
 func getClosestRegion(click image.Point, imageWidth int, imageHeight int) int {
-	for i, region := range currentRegions {
+	for i, region := range currentRegions.Regions {
 		w := int(float32(region.width) * float32(imageWidth))
 		h := int(float32(region.height) * float32(imageHeight))
 		x := int(float32(region.xMid)*float32(imageWidth)) - w/2
@@ -267,7 +163,7 @@ func getClosestRegion(click image.Point, imageWidth int, imageHeight int) int {
 	}
 
 	// If we're close to a region, and it's small, then assume we just missed and select it
-	for i, region := range currentRegions {
+	for i, region := range currentRegions.Regions {
 		w := int(float32(region.width) * float32(imageWidth))
 		h := int(float32(region.height) * float32(imageHeight))
 		x := int(float32(region.xMid)*float32(imageWidth)) - w/2
@@ -293,7 +189,7 @@ func loop() {
 	windowWidth, windowHeight := wnd.GetSize()
 
 	var regionSummary string
-	for i, region := range currentRegions {
+	for i, region := range currentRegions.Regions {
 		if i > 0 {
 			regionSummary += ", "
 		}
@@ -344,13 +240,7 @@ func loop() {
 								height: float64(newRect.Dy()) / float64(imageHeight),
 								index:  drawingIndex, // TODO: Make this configurable
 							}
-							if !newRegion.IsValid() {
-								log.Printf("Invalid region: %#v", newRegion)
-							} else {
-								currentRegions = append(currentRegions, newRegion)
-								log.Printf("Added new region %#v", newRegion)
-								saveRegions()
-							}
+							currentRegions.AddRegion(newRegion)
 							drawingRect = false
 						}
 						canvas.AddRect(pos.Add(drawingStart), pos.Add(end), color.RGBA{255, 0, 0, 255}, 0, 0, 2)
@@ -368,13 +258,12 @@ func loop() {
 						click := giu.GetMousePos().Sub(pos)
 						index := getClosestRegion(click, imageWidth, imageHeight)
 						if index >= 0 {
-							currentRegions = append(currentRegions[:index], currentRegions[index+1:]...)
-							log.Printf("Removed region %d: %#v", index, currentRegions)
-							saveRegions()
+							currentRegions.Remove(index)
+
 						}
 					}
 
-					for _, region := range currentRegions {
+					for _, region := range currentRegions.Regions {
 						w := int(float32(region.width) * float32(imageWidth))
 						h := int(float32(region.height) * float32(imageHeight))
 						x := int(float32(region.xMid)*float32(imageWidth)) - w/2
