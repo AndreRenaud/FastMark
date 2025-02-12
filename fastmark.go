@@ -35,6 +35,8 @@ var (
 	splitPos  = float32(300)
 
 	labels []string
+
+	wnd *giu.MasterWindow
 )
 
 type Region struct {
@@ -105,8 +107,10 @@ func saveRegions() {
 	}
 }
 
-func (r Region) Color() color.RGBA {
+func (r Region) Color() color.Color {
 	switch r.index {
+	case 0:
+		return color.RGBA{255, 128, 64, 255}
 	case 1:
 		return color.RGBA{255, 0, 0, 255}
 	case 2:
@@ -120,21 +124,30 @@ func (r Region) Color() color.RGBA {
 	case 6:
 		return color.RGBA{0, 255, 255, 255}
 	default:
-		return color.RGBA{128, 128, 128, 255}
+		return color.YCbCr{255, uint8(r.index * 16), uint8(r.index * 16)}
 	}
 }
 
 func (r Region) IsValid() bool {
 	if r.width <= 0 || r.height <= 0 || r.width > 1 || r.height > 1 {
+		log.Printf("Invalid width/height: %#v", r)
 		return false
 	}
 	if r.xMid < 0 || r.xMid > 1 || r.yMid < 0 || r.yMid > 1 {
+		log.Printf("Invalid x/y mid: %#v", r)
 		return false
 	}
 	if r.xMid-r.width/2 < 0 || r.xMid+r.width/2 > 1 {
+		log.Printf("Invalid x range: %#v", r)
 		return false
 	}
 	if r.yMid-r.height/2 < 0 || r.yMid+r.height/2 > 1 {
+		log.Printf("Invalid y range: %#v %f %f", r, r.yMid-r.height/2, r.yMid+r.height/2)
+		return false
+	}
+
+	// TODO: Is this legit? These are too small to be useful
+	if r.width < 0.001 || r.height < 0.001 {
 		return false
 	}
 	return true
@@ -263,6 +276,16 @@ func loop() {
 		file = files[selectedIndex]
 	}
 
+	windowWidth, windowHeight := wnd.GetSize()
+
+	var regionSummary string
+	for i, region := range currentRegions {
+		if i > 0 {
+			regionSummary += ", "
+		}
+		regionSummary += fmt.Sprintf("%d: %s mid=%.3f,%.3f size=%.3fx%.3f", i, labelName(region.index), region.xMid, region.yMid, region.width, region.height)
+	}
+
 	window.Layout(
 		giu.Label(fmt.Sprintf("Fast Mark image tagging %d/%d images", selectedIndex, len(files))),
 		giu.SplitLayout(giu.DirectionVertical, &splitPos,
@@ -277,12 +300,16 @@ func loop() {
 					giu.Label(directory),
 				),
 				giu.Labelf("Current file: %s", file),
+				giu.Labelf("Regions: %s", regionSummary),
 				giu.Labelf("Drawing label: %d %s (Press 1-9 to select new type)\n", drawingIndex, labelName(drawingIndex)),
 				giu.Custom(func() {
 					canvas := giu.GetCanvas()
 					pos := giu.GetCursorScreenPos()
-					imageWidth := 800
-					imageHeight := 600
+					wpos := giu.GetCursorPos()
+
+					// Draw the image as big as the remaining space
+					imageWidth := windowWidth - wpos.X
+					imageHeight := windowHeight - wpos.Y
 
 					if currentImage != nil {
 						max := pos.Add(image.Point{X: imageWidth, Y: imageHeight})
@@ -292,15 +319,15 @@ func loop() {
 					if drawingRect {
 						end := giu.GetMousePos().Sub(pos)
 						if !giu.IsMouseDown(giu.MouseButtonLeft) {
-							// Make sure width & height are positive
-							if drawingStart.X > end.X || drawingStart.Y > end.Y {
-								drawingStart, end = end, drawingStart
-							}
+							// Create a new well formed region clamped within the image
+							newRect := image.Rect(drawingStart.X, drawingStart.Y, end.X, end.Y)
+							newRect = newRect.Intersect(image.Rect(0, 0, imageWidth, imageHeight)).Canon()
+							log.Printf("New rect: %v", newRect)
 							newRegion := Region{
-								xMid:   float64(drawingStart.X+end.X) / 2 / float64(imageWidth),
-								yMid:   float64(drawingStart.Y+end.Y) / 2 / float64(imageHeight),
-								width:  float64(end.X-drawingStart.X) / float64(imageWidth),
-								height: float64(end.Y-drawingStart.Y) / float64(imageHeight),
+								xMid:   (float64(newRect.Dx())/2 + float64(newRect.Min.X)) / float64(imageWidth),
+								yMid:   (float64(newRect.Dy())/2 + float64(newRect.Min.Y)) / float64(imageHeight),
+								width:  float64(newRect.Dx()) / float64(imageWidth),
+								height: float64(newRect.Dy()) / float64(imageHeight),
 								index:  drawingIndex, // TODO: Make this configurable
 							}
 							if !newRegion.IsValid() {
@@ -345,7 +372,7 @@ func loop() {
 							mouse := giu.GetMousePos()
 							relMouse := mouse.Sub(pos)
 							if relMouse.X >= x && relMouse.X <= x+w && relMouse.Y >= y && relMouse.Y <= y+h {
-								canvas.AddText(mouse.Add(image.Point{0, -20}), color, labelName(region.index))
+								canvas.AddText(mouse.Add(image.Point{0, -20}), color, fmt.Sprintf("%s - %d", labelName(region.index), region.index))
 							}
 						}
 					}
@@ -371,7 +398,7 @@ func main() {
 	flag.StringVar(&directory, "directory", "", "Directory to load images from")
 	flag.Parse()
 
-	wnd := giu.NewMasterWindow("Fast Mark Image Tagging", 1024, 768, 0)
+	wnd = giu.NewMasterWindow("Fast Mark Image Tagging", 1024, 768, 0)
 
 	updateFiles()
 	wnd.Run(loop)
