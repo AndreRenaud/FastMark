@@ -7,7 +7,6 @@ import (
 	"image"
 	"image/color"
 	"log"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -33,12 +32,13 @@ var (
 	drawingStart image.Point
 	drawingIndex int
 
-	directory string
-	splitPos  = float32(300)
+	splitPos = float32(300)
 
 	labels []string
 
 	wnd *giu.MasterWindow
+
+	backend Storage
 )
 
 func labelName(index int) string {
@@ -49,7 +49,7 @@ func labelName(index int) string {
 }
 
 func loadImage(filename string) (image.Image, error) {
-	f, err := os.Open(filename)
+	f, err := backend.Open(filename)
 	if err != nil {
 		return nil, err
 	}
@@ -60,9 +60,8 @@ func loadImage(filename string) (image.Image, error) {
 
 func drawFile(filename string) {
 	currentImage = nil
-	fullFilename := filepath.Join(directory, filename)
 
-	if img, err := loadImage(fullFilename); err != nil {
+	if img, err := loadImage("images/" + filename); err != nil {
 		log.Printf("Error loading image %s: %s", filename, err)
 	} else {
 		giu.EnqueueNewTextureFromRgba(img, func(t *giu.Texture) {
@@ -72,10 +71,10 @@ func drawFile(filename string) {
 
 	ext := filepath.Ext(filename)
 
-	labelFile := filepath.Join(directory, "../labels/", strings.TrimSuffix(filename, ext)+".txt")
+	labelFile := filepath.Join("labels", strings.TrimSuffix(filename, ext)+".txt")
 
 	var err error
-	currentRegions, err = LoadRegionList(labelFile)
+	currentRegions, err = LoadRegionList(backend, labelFile)
 	if err != nil {
 		log.Printf("Error loading regions for %s: %s", filename, err)
 	}
@@ -87,7 +86,7 @@ func selectDirectory() {
 		log.Printf("Error selecting directory: %s", err)
 		return
 	}
-	directory = newDirectory
+	backend = Storage{newDirectory}
 	updateFiles()
 }
 
@@ -112,9 +111,9 @@ func selectFile(i int) {
 func updateFiles() {
 	files = []string{}
 
-	match, err := filepath.Glob(filepath.Join(directory, "*"))
+	match, err := backend.Glob("images", "*")
 	if err != nil {
-		log.Printf("Error listing files in %s: %s", directory, err)
+		log.Printf("Error listing files: %s", err)
 	} else {
 		for _, m := range match {
 			ext := filepath.Ext(m)
@@ -134,10 +133,9 @@ func updateFiles() {
 		fileRows[i] = giu.TableRow(fileLabels[i])
 	}
 
-	labelsFile := filepath.Join(directory, "../labels.txt")
-	file, err := os.Open(labelsFile)
+	file, err := backend.Open("labels.txt")
 	if err != nil {
-		log.Printf("Error opening labels file %s: %s", labelsFile, err)
+		log.Printf("Error opening labels file: %s", err)
 	} else {
 		defer file.Close()
 		scanner := bufio.NewScanner(file)
@@ -207,7 +205,7 @@ func loop() {
 			giu.Column(
 				giu.Row(
 					giu.Button("Change Directory").OnClick(selectDirectory),
-					giu.Label(directory),
+					giu.Label(backend.Describe()),
 				),
 				giu.Labelf("Current file: %s", file),
 				giu.Labelf("Regions: %s", regionSummary),
@@ -215,11 +213,13 @@ func loop() {
 				giu.Custom(func() {
 					canvas := giu.GetCanvas()
 					pos := giu.GetCursorScreenPos()
-					wpos := giu.GetCursorPos()
+					wx, wy := window.CurrentPosition()
 
-					// Draw the image as big as the remaining space
-					imageWidth := windowWidth - wpos.X
-					imageHeight := windowHeight - wpos.Y
+					canvasPos := image.Point{X: pos.X - int(wx), Y: pos.Y - int(wy)}
+
+					// Draw the image as big as the remaining space with a small border
+					imageWidth := windowWidth - canvasPos.X - 10
+					imageHeight := windowHeight - canvasPos.Y - 10
 
 					if currentImage != nil {
 						max := pos.Add(image.Point{X: imageWidth, Y: imageHeight})
@@ -298,10 +298,13 @@ func loop() {
 }
 
 func main() {
-	flag.StringVar(&directory, "directory", "", "Directory to load images from")
+	directory := flag.String("directory", "", "Directory to load images from")
 	flag.Parse()
 
 	wnd = giu.NewMasterWindow("Fast Mark Image Tagging", 1024, 768, 0)
+	if *directory != "" {
+		backend = Storage{*directory}
+	}
 
 	updateFiles()
 	wnd.Run(loop)

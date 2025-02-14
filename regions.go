@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"image/color"
 	"log"
-	"os"
 	"strconv"
 	"strings"
 )
@@ -22,10 +21,11 @@ type Region struct {
 type RegionList struct {
 	Regions  []Region
 	filename string
+	backend  Storage
 }
 
-func LoadRegionList(filename string) (RegionList, error) {
-	file, err := os.Open(filename)
+func LoadRegionList(backend Storage, filename string) (RegionList, error) {
+	file, err := backend.Open(filename)
 	if err != nil {
 		log.Printf("Error opening file %s: %s", filename, err)
 		return RegionList{}, err
@@ -70,12 +70,12 @@ func LoadRegionList(filename string) (RegionList, error) {
 		retval = append(retval, region)
 	}
 
-	return RegionList{Regions: retval, filename: filename}, nil
+	return RegionList{Regions: retval, filename: filename, backend: backend}, nil
 }
 
 func (r RegionList) Save() error {
 	log.Printf("Saving regions to %s", r.filename)
-	file, err := os.OpenFile(r.filename, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	file, err := r.backend.OpenWrite(r.filename, false)
 	if err != nil {
 		log.Printf("Error creating file %s: %s", r.filename, err)
 		return err
@@ -108,6 +108,9 @@ func (r Region) Color() color.Color {
 }
 
 func (r Region) IsValid() bool {
+	// Give a bit of floating point tolerance
+	lowLimit := -0.0001
+	highLimit := 1.0001
 	if r.width <= 0 || r.height <= 0 || r.width > 1 || r.height > 1 {
 		log.Printf("Invalid width/height: %#v", r)
 		return false
@@ -116,17 +119,17 @@ func (r Region) IsValid() bool {
 		log.Printf("Invalid x/y mid: %#v", r)
 		return false
 	}
-	if r.xMid-r.width/2 < 0 || r.xMid+r.width/2 > 1 {
-		log.Printf("Invalid x range: %#v", r)
+	if r.xMid-r.width/2 < lowLimit || r.xMid+r.width/2 > highLimit {
+		log.Printf("Invalid x range: %#v %f, %f", r, r.xMid-r.width/2, r.xMid+r.width/2)
 		return false
 	}
-	if r.yMid-r.height/2 < 0 || r.yMid+r.height/2 > 1 {
+	if r.yMid-r.height/2 < lowLimit || r.yMid+r.height/2 > highLimit {
 		log.Printf("Invalid y range: %#v %f %f", r, r.yMid-r.height/2, r.yMid+r.height/2)
 		return false
 	}
 
 	// TODO: Is this legit? These are too small to be useful
-	if r.width < 0.001 || r.height < 0.001 {
+	if r.width < 0.0005 || r.height < 0.0005 {
 		return false
 	}
 	return true

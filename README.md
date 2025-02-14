@@ -8,8 +8,28 @@ FastMark is a simple GUI tool for tagging images in the Darknet format, widely u
 - Compatible with YOLO-based processes
 
 ## Usage
-1. Open an image folder.
+1. Open a dataset folder.
 2. Draw and label bounding boxes with intuitive controls.
-3. Save or export annotations for YOLO training.
+3. Automatically save annotations for YOLO training.
 
 For further instructions, refer to project documentation or any tutorials covering Darknet and YOLO workflows.
+
+## Data layout
+Assumes data is on the filesystem as:
+
+```plaintext
+target-dir/
+   ├── labels.txt
+   ├── images/
+   │   ├── *.jpg
+   │   └── *.png
+   └── labels/
+       └── *.txt
+```
+
+Where the `labels.txt` file contains the dataset categories, and the files in `labels/*.txt` match the names of the ones in `images/*.jpg, *.png`. The files in `labels/*.txt` will be automatically updated when a rectangle is drawn, and created if they do not already exist.
+
+## Keyboard shortcuts
+* 0-9: Select the label category that will be drawn for subsequent rectangles
+* up-arrow, k: move to previous image
+* down-arrow, j: move to next image
