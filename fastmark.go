@@ -24,9 +24,10 @@ var (
 	fileRows   []*giu.TableRowWidget
 	fileLabels []*giu.SelectableWidget
 
-	currentImage   *giu.Texture
-	selectedIndex  int
-	currentRegions RegionList
+	currentImageTexture *giu.Texture
+	currentImage        image.Image
+	selectedIndex       int
+	currentRegions      RegionList
 
 	drawingRect  bool
 	drawingStart image.Point
@@ -59,13 +60,15 @@ func loadImage(filename string) (image.Image, error) {
 }
 
 func drawFile(filename string) {
+	currentImageTexture = nil
 	currentImage = nil
 
 	if img, err := loadImage("images/" + filename); err != nil {
 		log.Printf("Error loading image %s: %s", filename, err)
 	} else {
 		giu.EnqueueNewTextureFromRgba(img, func(t *giu.Texture) {
-			currentImage = t
+			currentImageTexture = t
+			currentImage = img
 		})
 	}
 
@@ -209,7 +212,9 @@ func loop() {
 				),
 				giu.Labelf("Current file: %s", file),
 				giu.Labelf("Regions: %s", regionSummary),
-				giu.Labelf("Drawing label: %d %s (Press 1-9 to select new type)\n", drawingIndex, labelName(drawingIndex)),
+				giu.Style().SetColor(giu.StyleColorText, RegionIndexColor(drawingIndex)).To(
+					giu.Labelf("Drawing label: %d %s (Press 1-9 to select new type)\n", drawingIndex, labelName(drawingIndex)),
+				),
 				giu.Custom(func() {
 					canvas := giu.GetCanvas()
 					pos := giu.GetCursorScreenPos()
@@ -221,9 +226,16 @@ func loop() {
 					imageWidth := windowWidth - canvasPos.X - 10
 					imageHeight := windowHeight - canvasPos.Y - 10
 
-					if currentImage != nil {
+					if currentImageTexture != nil {
+						// Make sure we maintain the ratio
+						size := currentImage.Bounds()
+						if float32(imageWidth)/float32(size.Dx()) < float32(imageHeight)/float32(size.Dy()) {
+							imageHeight = int(float32(size.Dy()) * float32(imageWidth) / float32(size.Dx()))
+						} else {
+							imageWidth = int(float32(size.Dx()) * float32(imageHeight) / float32(size.Dy()))
+						}
 						max := pos.Add(image.Point{X: imageWidth, Y: imageHeight})
-						canvas.AddImage(currentImage, pos, max)
+						canvas.AddImage(currentImageTexture, pos, max)
 					}
 					// Check if the user has stopped drawing
 					if drawingRect {
@@ -254,12 +266,23 @@ func loop() {
 					}
 
 					if giu.IsMouseClicked(giu.MouseButtonRight) {
+						changeRegion := -1
+						// If we're pressing a number key, change the region type, otherwise delete it
+						for key := giu.Key0; key <= giu.Key9; key++ {
+							if giu.IsKeyDown(key) {
+								changeRegion = int(key - giu.Key0)
+							}
+						}
 						// Find the region that was clicked
 						click := giu.GetMousePos().Sub(pos)
 						index := getClosestRegion(click, imageWidth, imageHeight)
 						if index >= 0 {
-							currentRegions.Remove(index)
-
+							if changeRegion >= 0 {
+								currentRegions.Regions[index].index = changeRegion
+								currentRegions.Save()
+							} else {
+								currentRegions.Remove(index)
+							}
 						}
 					}
 
@@ -289,6 +312,18 @@ func loop() {
 	}
 	if giu.IsKeyPressed(giu.KeyUp) || giu.IsKeyPressed(giu.KeyK) {
 		selectFile(selectedIndex - 1)
+	}
+	if giu.IsKeyPressed(giu.KeyLeft) || giu.IsKeyPressed(giu.KeyH) {
+		drawingIndex--
+		if drawingIndex < 0 {
+			drawingIndex = 0
+		}
+	}
+	if giu.IsKeyPressed(giu.KeyRight) || giu.IsKeyPressed(giu.KeyL) {
+		drawingIndex++
+		if drawingIndex >= len(labels) {
+			drawingIndex = len(labels) - 1
+		}
 	}
 	for i := 0; i < 9; i++ {
 		if giu.IsKeyPressed(giu.Key(int(giu.Key0) + i)) {

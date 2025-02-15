@@ -86,8 +86,8 @@ func (r RegionList) Save() error {
 	return file.Close()
 }
 
-func (r Region) Color() color.Color {
-	switch r.index {
+func RegionIndexColor(index int) color.Color {
+	switch index {
 	case 0:
 		return color.RGBA{255, 128, 64, 255}
 	case 1:
@@ -103,8 +103,12 @@ func (r Region) Color() color.Color {
 	case 6:
 		return color.RGBA{0, 255, 255, 255}
 	default:
-		return color.YCbCr{255, uint8(r.index * 16), uint8(r.index * 16)}
+		return color.YCbCr{255, uint8(index * 16), uint8(index * 16)}
 	}
+}
+
+func (r Region) Color() color.Color {
+	return RegionIndexColor(r.index)
 }
 
 func (r Region) IsValid() bool {
