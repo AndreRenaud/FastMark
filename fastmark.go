@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"flag"
 	"fmt"
 	"image"
@@ -11,6 +12,7 @@ import (
 	"slices"
 	"strings"
 
+	_ "embed"
 	_ "image/jpeg"
 	_ "image/png"
 
@@ -18,6 +20,9 @@ import (
 
 	"github.com/AllenDang/giu"
 )
+
+//go:embed icon-128.png
+var iconData []byte
 
 var (
 	files      []string
@@ -339,6 +344,12 @@ func main() {
 	wnd = giu.NewMasterWindow("Fast Mark Image Tagging", 1024, 768, 0)
 	if *directory != "" {
 		backend = Storage{*directory}
+	}
+	icon, _, err := image.Decode(bytes.NewReader(iconData))
+	if err == nil {
+		wnd.SetIcon(icon)
+	} else {
+		log.Printf("Error setting icon: %s", err)
 	}
 
 	updateFiles()

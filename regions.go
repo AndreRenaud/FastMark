@@ -103,7 +103,7 @@ func RegionIndexColor(index int) color.Color {
 	case 6:
 		return color.RGBA{0, 255, 255, 255}
 	default:
-		return color.YCbCr{255, uint8(index * 16), uint8(index * 16)}
+		return color.YCbCr{255, uint8(index * 33), uint8(index * 16)}
 	}
 }
 
