@@ -21,12 +21,18 @@ func (s Storage) Open(filename string) (io.ReadCloser, error) {
 }
 
 func (s Storage) OpenWrite(filename string, append bool) (io.WriteCloser, error) {
+	fullname := s.fullPath(filename)
+
+	// Ensure the directory exists
+	dirname := filepath.Dir(fullname)
+	os.MkdirAll(dirname, 0755)
+
 	flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
 	if append {
 		flags = os.O_WRONLY | os.O_CREATE | os.O_APPEND
 	}
 
-	return os.OpenFile(s.fullPath(filename), flags, 0644)
+	return os.OpenFile(fullname, flags, 0644)
 }
 
 func (s Storage) Glob(directory string, pattern string) ([]string, error) {
