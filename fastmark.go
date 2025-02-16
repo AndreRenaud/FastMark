@@ -100,7 +100,7 @@ func selectDirectory() {
 
 func selectFile(i int) {
 	if i < 0 || i >= len(files) {
-		log.Printf("Invalid file index %d", i)
+		log.Printf("Invalid file index %d (max %d)", i, len(files))
 		return
 	}
 	if selectedIndex > 0 && selectedIndex < len(fileLabels) {
@@ -298,14 +298,7 @@ func loop() {
 						y := int(float32(region.yMid)*float32(imageHeight)) - h/2
 						color := region.Color()
 						canvas.AddRect(pos.Add(image.Point{X: x, Y: y}), pos.Add(image.Point{X: x + w, Y: y + h}), color, 0, 0, 2)
-
-						if !giu.IsMouseDown(giu.MouseButtonLeft) {
-							mouse := giu.GetMousePos()
-							relMouse := mouse.Sub(pos)
-							if relMouse.X >= x && relMouse.X <= x+w && relMouse.Y >= y && relMouse.Y <= y+h {
-								canvas.AddText(mouse.Add(image.Point{0, -20}), color, fmt.Sprintf("%s - %d", labelName(region.index), region.index))
-							}
-						}
+						canvas.AddText(pos.Add(image.Point{X: x + w/2, Y: y - 20}), color, fmt.Sprintf("%s - %d", labelName(region.index), region.index))
 					}
 				}),
 			),
@@ -333,6 +326,26 @@ func loop() {
 	for i := 0; i < 9; i++ {
 		if giu.IsKeyPressed(giu.Key(int(giu.Key0) + i)) {
 			drawingIndex = i
+		}
+	}
+	if giu.IsKeyPressed(giu.KeyN) {
+		direction := 1
+		if giu.IsKeyDown(giu.KeyLeftShift) || giu.IsKeyDown(giu.KeyRightShift) {
+			direction = -1
+		}
+		// Find the next region that's not labeled
+		for i := selectedIndex + direction; i < len(files) && i >= 0; i += direction {
+			filename := files[i]
+			ext := filepath.Ext(filename)
+
+			labelFile := filepath.Join("labels", strings.TrimSuffix(filename, ext)+".txt")
+
+			regions, err := LoadRegionList(backend, labelFile)
+			log.Printf("%d Loaded %d regions: %s", i, len(regions.Regions), labelFile)
+			if err != nil || len(regions.Regions) == 0 {
+				selectFile(i)
+				break
+			}
 		}
 	}
 }
