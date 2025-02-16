@@ -28,7 +28,7 @@ func LoadRegionList(backend Storage, filename string) (RegionList, error) {
 	file, err := backend.Open(filename)
 	if err != nil {
 		log.Printf("Error opening file %s: %s", filename, err)
-		return RegionList{}, err
+		return RegionList{backend: backend, filename: filename}, err
 	}
 	defer file.Close()
 
