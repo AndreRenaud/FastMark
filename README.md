@@ -37,3 +37,6 @@ Where the `labels.txt` file contains the dataset categories, and the files in `l
 * 0-9: Select the label category that will be drawn for subsequent rectangles
 * up-arrow, k: move to previous image
 * down-arrow, j: move to next image
+* n: Select next image that isn't labelled (N for previous)
+* left-arrow: select previous category
+* right-arrow: select next category
