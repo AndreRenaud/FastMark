@@ -40,3 +40,15 @@ Where the `labels.txt` file contains the dataset categories, and the files in `l
 * n: Select next image that isn't labelled (N for previous)
 * left-arrow: select previous category
 * right-arrow: select next category
+
+# Building a dataset
+
+If you have a selection of previously recorded, but uncategorised videos, you can extract the frames as individual trainable images using `ffmpeg`:
+```sh
+for f in training_videos/*.mp4 ; do
+    base=$(basename $f)
+    ffmpeg -i $f images/${base%%.mp4}-%04d.png
+done
+```
+
+Once this is complete, created `labels.txt` with the various categories, and then use FastMark to create the per-image label information.

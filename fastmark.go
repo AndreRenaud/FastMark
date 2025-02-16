@@ -45,7 +45,67 @@ var (
 	wnd *giu.MasterWindow
 
 	backend Storage
+
+	metadata Metadata
 )
+
+type Metadata struct {
+	Total          int
+	Categorised    int
+	TotalRegions   int
+	CategoryTotals []int
+}
+
+func (m Metadata) Summary() string {
+	summary := fmt.Sprintf("Total: %d, Categorised: %d (%d%%)", m.Total, m.Categorised, metadata.Percent())
+
+	return summary
+}
+
+func (m Metadata) CategorySummary() string {
+	summary := ""
+	for i := range len(m.CategoryTotals) {
+		percent := 0.0
+		if m.Total > 0 {
+			percent = float64(m.CategoryTotals[i]*100) / float64(m.Total)
+		}
+		summary += fmt.Sprintf("%s: %d %.1f%%\n", labelName(i), m.CategoryTotals[i], percent)
+	}
+
+	return summary
+}
+
+func (m Metadata) Percent() int {
+	if m.Total == 0 {
+		return 0
+	}
+	return m.Categorised * 100 / m.Total
+}
+
+func updateMetadata() Metadata {
+	metadata = Metadata{}
+	metadata.CategoryTotals = make([]int, len(labels))
+	for _, file := range files {
+		ext := filepath.Ext(file)
+		labelFile := filepath.Join("labels", strings.TrimSuffix(file, ext)+".txt")
+		regions, err := LoadRegionList(backend, labelFile)
+		if err != nil {
+			log.Printf("Error loading regions for %s: %s", file, err)
+			continue
+		}
+		for _, region := range regions.Regions {
+			if region.index >= 0 && region.index < len(metadata.CategoryTotals) {
+				metadata.CategoryTotals[region.index]++
+			}
+			metadata.TotalRegions++
+		}
+		if len(regions.Regions) > 0 {
+			metadata.Categorised++
+		}
+		metadata.Total++
+	}
+	return metadata
+}
 
 func labelName(index int) string {
 	if index >= 0 && index < len(labels) {
@@ -153,6 +213,8 @@ func updateFiles() {
 		}
 	}
 
+	go updateMetadata()
+
 	selectFile(0)
 }
 
@@ -242,6 +304,7 @@ func loop() {
 						max := pos.Add(image.Point{X: imageWidth, Y: imageHeight})
 						canvas.AddImage(currentImageTexture, pos, max)
 					}
+					giu.SetCursorScreenPos(pos.Add(image.Point{X: 0, Y: imageHeight}))
 					// Check if the user has stopped drawing
 					if drawingRect {
 						end := giu.GetMousePos().Sub(pos)
@@ -300,6 +363,12 @@ func loop() {
 						canvas.AddRect(pos.Add(image.Point{X: x, Y: y}), pos.Add(image.Point{X: x + w, Y: y + h}), color, 0, 0, 2)
 						canvas.AddText(pos.Add(image.Point{X: x + w/2, Y: y - 20}), color, fmt.Sprintf("%s - %d", labelName(region.index), region.index))
 					}
+				}),
+				giu.Label("Press n to find next unlabeled image"),
+				giu.Label(metadata.Summary()),
+				giu.Label(metadata.CategorySummary()),
+				giu.Button("Update Metadata").OnClick(func() {
+					metadata = updateMetadata()
 				}),
 			),
 		),
