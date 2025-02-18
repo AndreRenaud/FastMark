@@ -18,7 +18,7 @@ import (
 	_ "image/png"
 
 	"github.com/AllenDang/giu"
-	"github.com/DesignA-Electronics/fastmark/storage"
+	"github.com/AndreRenaud/fastmark/storage"
 	"github.com/sqweek/dialog"
 )
 

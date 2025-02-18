@@ -1,4 +1,4 @@
-module github.com/DesignA-Electronics/fastmark
+module github.com/AndreRenaud/fastmark
 
 go 1.24.0
 

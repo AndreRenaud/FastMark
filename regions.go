@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/DesignA-Electronics/fastmark/storage"
+	"github.com/AndreRenaud/fastmark/storage"
 )
 
 type Region struct {
