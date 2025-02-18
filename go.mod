@@ -4,6 +4,7 @@ go 1.24.0
 
 require (
 	github.com/AllenDang/giu v0.12.1-0.20250210081617-6ef55c8aadf0
+	github.com/pkg/sftp v1.13.7
 	github.com/sqweek/dialog v0.0.0-20240226140203-065105509627
 )
 
@@ -17,11 +18,10 @@ require (
 	github.com/mazznoer/csscolorparser v0.1.5 // indirect
 	github.com/napsy/go-css v0.0.0-20230611142900-9dd118f3874c // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
-	github.com/pkg/sftp v1.13.7 // indirect
 	github.com/sahilm/fuzzy v0.1.1 // indirect
 	golang.design/x/hotkey v0.4.1 // indirect
 	golang.design/x/mainthread v0.3.0 // indirect
-	golang.org/x/crypto v0.17.0 // indirect
+	golang.org/x/crypto v0.33.0 // indirect
 	golang.org/x/image v0.24.0 // indirect
 	golang.org/x/sys v0.30.0 // indirect
 	gopkg.in/eapache/queue.v1 v1.1.0 // indirect
