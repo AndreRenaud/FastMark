@@ -16,9 +16,9 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 
-	"github.com/sqweek/dialog"
-
 	"github.com/AllenDang/giu"
+	"github.com/DesignA-Electronics/fastmark/storage"
+	"github.com/sqweek/dialog"
 )
 
 //go:embed icon-128.png
@@ -44,7 +44,7 @@ var (
 
 	wnd *giu.MasterWindow
 
-	backend Storage
+	backend storage.Storage
 
 	metadata Metadata
 )
@@ -85,6 +85,7 @@ func (m Metadata) Percent() int {
 func updateMetadata() Metadata {
 	metadata = Metadata{}
 	metadata.CategoryTotals = make([]int, len(labels))
+	metadata.Total = len(files)
 	for _, file := range files {
 		ext := filepath.Ext(file)
 		labelFile := filepath.Join("labels", strings.TrimSuffix(file, ext)+".txt")
@@ -102,7 +103,6 @@ func updateMetadata() Metadata {
 		if len(regions.Regions) > 0 {
 			metadata.Categorised++
 		}
-		metadata.Total++
 	}
 	return metadata
 }
@@ -154,7 +154,7 @@ func selectDirectory() {
 		log.Printf("Error selecting directory: %s", err)
 		return
 	}
-	backend = Storage{newDirectory}
+	backend = storage.NewStorage(newDirectory)
 	updateFiles()
 }
 
@@ -425,7 +425,9 @@ func main() {
 
 	wnd = giu.NewMasterWindow("Fast Mark Image Tagging", 1024, 768, 0)
 	if *directory != "" {
-		backend = Storage{*directory}
+		backend = storage.NewStorage(*directory)
+	} else {
+		backend = &storage.DummyStorage{}
 	}
 	icon, _, err := image.Decode(bytes.NewReader(iconData))
 	if err == nil {

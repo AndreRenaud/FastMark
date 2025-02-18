@@ -7,6 +7,8 @@ import (
 	"log"
 	"strconv"
 	"strings"
+
+	"github.com/DesignA-Electronics/fastmark/storage"
 )
 
 type Region struct {
@@ -21,10 +23,10 @@ type Region struct {
 type RegionList struct {
 	Regions  []Region
 	filename string
-	backend  Storage
+	backend  storage.Storage
 }
 
-func LoadRegionList(backend Storage, filename string) (RegionList, error) {
+func LoadRegionList(backend storage.Storage, filename string) (RegionList, error) {
 	file, err := backend.Open(filename)
 	if err != nil {
 		log.Printf("Error opening file %s: %s", filename, err)
