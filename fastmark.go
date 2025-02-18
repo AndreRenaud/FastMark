@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	_ "embed"
 	_ "image/jpeg"
@@ -50,14 +51,18 @@ var (
 )
 
 type Metadata struct {
-	Total          int
-	Categorised    int
-	TotalRegions   int
-	CategoryTotals []int
+	Total             int
+	Categorised       int
+	TotalRegions      int
+	CategoryTotals    []int
+	ScanTimeRemaining time.Duration
 }
 
 func (m Metadata) Summary() string {
 	summary := fmt.Sprintf("Total: %d, Categorised: %d (%d%%)", m.Total, m.Categorised, metadata.Percent())
+	if m.ScanTimeRemaining > time.Second {
+		summary += fmt.Sprintf(", Remaining: %s", m.ScanTimeRemaining.Round(time.Second))
+	}
 
 	return summary
 }
@@ -86,7 +91,8 @@ func updateMetadata() Metadata {
 	metadata = Metadata{}
 	metadata.CategoryTotals = make([]int, len(labels))
 	metadata.Total = len(files)
-	for _, file := range files {
+	start := time.Now()
+	for i, file := range files {
 		ext := filepath.Ext(file)
 		labelFile := filepath.Join("labels", strings.TrimSuffix(file, ext)+".txt")
 		regions, err := LoadRegionList(backend, labelFile)
@@ -103,6 +109,7 @@ func updateMetadata() Metadata {
 		if len(regions.Regions) > 0 {
 			metadata.Categorised++
 		}
+		metadata.ScanTimeRemaining = time.Since(start) * time.Duration(metadata.Total-i) / time.Duration(i+1)
 	}
 	return metadata
 }

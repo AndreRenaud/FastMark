@@ -7,6 +7,7 @@ FastMark is a simple GUI tool for tagging images in the Darknet format, widely u
 - Quick image loading and labeling
 - Automated generation of annotation files in Darknet format
 - Compatible with YOLO-based processes
+- Local file access, and remote access via ssh/sftp
 
 ## Usage
 1. Open a dataset folder.
