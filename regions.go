@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/AndreRenaud/fastmark/storage"
+	lru "github.com/hashicorp/golang-lru/v2"
 )
 
 type Region struct {
@@ -26,7 +27,26 @@ type RegionList struct {
 	backend  storage.Storage
 }
 
+var (
+	cache *lru.Cache[string, RegionList]
+)
+
+func RegionsInit() error {
+	var err error
+	cache, err = lru.New[string, RegionList](100_000)
+	if err != nil {
+		return err
+	}
+	return nil
+
+}
+
 func LoadRegionList(backend storage.Storage, filename string) (RegionList, error) {
+	if cache != nil {
+		if r, ok := cache.Get(filename); ok {
+			return r, nil
+		}
+	}
 	file, err := backend.Open(filename)
 	if err != nil {
 		log.Printf("Error opening file %s: %s", filename, err)
@@ -72,11 +92,18 @@ func LoadRegionList(backend storage.Storage, filename string) (RegionList, error
 		retval = append(retval, region)
 	}
 
-	return RegionList{Regions: retval, filename: filename, backend: backend}, nil
+	r := RegionList{Regions: retval, filename: filename, backend: backend}
+	if cache != nil {
+		cache.Add(filename, r)
+	}
+	return r, nil
 }
 
 func (r RegionList) Save() error {
 	log.Printf("Saving regions to %s", r.filename)
+	if cache != nil {
+		cache.Add(r.filename, r)
+	}
 	file, err := r.backend.OpenWrite(r.filename, false)
 	if err != nil {
 		log.Printf("Error creating file %s: %s", r.filename, err)
