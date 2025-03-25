@@ -11,12 +11,13 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
+	"sync"
 
 	_ "embed"
 	_ "image/jpeg"
 	_ "image/png"
 
+	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/AllenDang/giu"
 	"github.com/AndreRenaud/fastmark/storage"
 	"github.com/sqweek/dialog"
@@ -48,21 +49,22 @@ var (
 	backend storage.Storage
 
 	metadata Metadata
+
+	scrollTrigger bool
 )
 
 type Metadata struct {
-	Total             int
-	Categorised       int
-	TotalRegions      int
-	CategoryTotals    []int
-	ScanTimeRemaining time.Duration
+	Total          int
+	Categorised    int
+	Scanned        int
+	TotalRegions   int
+	CategoryTotals []int
+
+	mutex sync.Mutex
 }
 
 func (m Metadata) Summary() string {
-	summary := fmt.Sprintf("Total: %d, Categorised: %d (%d%%)", m.Total, m.Categorised, metadata.Percent())
-	if m.ScanTimeRemaining > time.Second {
-		summary += fmt.Sprintf(", Remaining: %s", m.ScanTimeRemaining.Round(time.Second))
-	}
+	summary := fmt.Sprintf("Total: %d, Scanned %d (%d%%) Categorised: %d (%d%%)", m.Total, m.Scanned, m.Scanned*100/m.Total, m.Categorised, metadata.Percent())
 
 	return summary
 }
@@ -87,19 +89,15 @@ func (m Metadata) Percent() int {
 	return m.Categorised * 100 / m.Total
 }
 
-func updateMetadata() Metadata {
-	metadata = Metadata{}
-	metadata.CategoryTotals = make([]int, len(labels))
-	metadata.Total = len(files)
-	start := time.Now()
-	for i, file := range files {
+func updateMetadataWorker(files <-chan string, done *sync.WaitGroup) error {
+	for file := range files {
 		ext := filepath.Ext(file)
 		labelFile := filepath.Join("labels", strings.TrimSuffix(file, ext)+".txt")
 		regions, err := LoadRegionList(backend, labelFile)
 		if err != nil {
-			log.Printf("Error loading regions for %s: %s", file, err)
-			continue
+			return err
 		}
+		metadata.mutex.Lock()
 		for _, region := range regions.Regions {
 			if region.index >= 0 && region.index < len(metadata.CategoryTotals) {
 				metadata.CategoryTotals[region.index]++
@@ -109,9 +107,31 @@ func updateMetadata() Metadata {
 		if len(regions.Regions) > 0 {
 			metadata.Categorised++
 		}
-		metadata.ScanTimeRemaining = time.Since(start) * time.Duration(metadata.Total-i) / time.Duration(i+1)
+		metadata.Scanned++
+		metadata.mutex.Unlock()
 	}
-	return metadata
+	done.Done()
+	return nil
+}
+
+func updateMetadata() {
+	metadata = Metadata{}
+	metadata.CategoryTotals = make([]int, len(labels))
+	metadata.Total = len(files)
+	filesChan := make(chan string, len(files))
+	wg := sync.WaitGroup{}
+	// This is mostly blocked by file I/O, especially on network drives,
+	// so run a bunch of parallel workers to compensate
+	workerCount := 50
+	wg.Add(workerCount)
+	for range workerCount {
+		go updateMetadataWorker(filesChan, &wg)
+	}
+	for _, file := range files {
+		filesChan <- file
+	}
+	close(filesChan)
+	wg.Wait()
 }
 
 func labelName(index int) string {
@@ -135,14 +155,17 @@ func drawFile(filename string) {
 	currentImageTexture = nil
 	currentImage = nil
 
-	if img, err := loadImage("images/" + filename); err != nil {
-		log.Printf("Error loading image %s: %s", filename, err)
-	} else {
-		giu.EnqueueNewTextureFromRgba(img, func(t *giu.Texture) {
-			currentImageTexture = t
-			currentImage = img
-		})
-	}
+	go func() {
+		if img, err := loadImage("images/" + filename); err != nil {
+			log.Printf("Error loading image %s: %s", filename, err)
+		} else {
+			giu.EnqueueNewTextureFromRgba(img, func(t *giu.Texture) {
+				currentImageTexture = t
+				currentImage = img
+				giu.Update()
+			})
+		}
+	}()
 
 	ext := filepath.Ext(filename)
 
@@ -170,7 +193,7 @@ func selectFile(i int) {
 		log.Printf("Invalid file index %d (max %d)", i, len(files))
 		return
 	}
-	if selectedIndex > 0 && selectedIndex < len(fileLabels) {
+	if selectedIndex >= 0 && selectedIndex < len(fileLabels) {
 		old := fileLabels[selectedIndex]
 		if old != nil {
 			old.Selected(false)
@@ -181,6 +204,9 @@ func selectFile(i int) {
 	fileLabels[i].Selected(true)
 	drawingRect = false
 	drawFile(file)
+
+	scrollTrigger = true
+	giu.Update()
 }
 
 func updateFiles() {
@@ -191,7 +217,7 @@ func updateFiles() {
 		log.Printf("Error listing files: %s", err)
 	} else {
 		for _, m := range match {
-			ext := filepath.Ext(m)
+			ext := strings.ToLower(filepath.Ext(m))
 			if ext == ".jpg" || ext == ".jpeg" || ext == ".png" {
 				files = append(files, filepath.Base(m))
 			}
@@ -201,11 +227,20 @@ func updateFiles() {
 	fileRows = make([]*giu.TableRowWidget, len(files))
 	fileLabels = make([]*giu.SelectableWidget, len(files))
 	for i, file := range files {
+		i := i
 		fileLabels[i] = giu.Selectable(file)
 		fileLabels[i].OnClick(func() {
 			selectFile(i)
 		})
-		fileRows[i] = giu.TableRow(fileLabels[i])
+		//fileRows[i] = giu.TableRow(fileLabels[i])
+		fileRows[i] = giu.TableRow(giu.Custom(func() {
+			fileLabels[i].Build()
+			if scrollTrigger && selectedIndex == i {
+				log.Printf("Scrolling to %d", i)
+				imgui.SetScrollHereYV(0.5)
+				scrollTrigger = false
+			}
+		}))
 	}
 
 	file, err := backend.Open("labels.txt")
@@ -354,7 +389,8 @@ func loop() {
 						if index >= 0 {
 							if changeRegion >= 0 {
 								currentRegions.Regions[index].index = changeRegion
-								currentRegions.Save()
+								// Do this async so we don't block the UI
+								go currentRegions.Save()
 							} else {
 								currentRegions.Remove(index)
 							}
@@ -375,7 +411,7 @@ func loop() {
 				giu.Label(metadata.Summary()),
 				giu.Label(metadata.CategorySummary()),
 				giu.Button("Update Metadata").OnClick(func() {
-					metadata = updateMetadata()
+					updateMetadata()
 				}),
 			),
 		),
@@ -401,7 +437,9 @@ func loop() {
 	}
 	for i := 0; i < 9; i++ {
 		if giu.IsKeyPressed(giu.Key(int(giu.Key0) + i)) {
-			drawingIndex = i
+			if i < len(labels) {
+				drawingIndex = i
+			}
 		}
 	}
 	if giu.IsKeyPressed(giu.KeyN) {
@@ -417,8 +455,8 @@ func loop() {
 			labelFile := filepath.Join("labels", strings.TrimSuffix(filename, ext)+".txt")
 
 			regions, err := LoadRegionList(backend, labelFile)
-			log.Printf("%d Loaded %d regions: %s", i, len(regions.Regions), labelFile)
 			if err != nil || len(regions.Regions) == 0 {
+				log.Printf("Found unlabeled image %s", filename)
 				selectFile(i)
 				break
 			}
@@ -429,6 +467,10 @@ func loop() {
 func main() {
 	directory := flag.String("directory", "", "Directory to load images from")
 	flag.Parse()
+
+	if err := RegionsInit(); err != nil {
+		log.Printf("Error loading regions: %s", err)
+	}
 
 	wnd = giu.NewMasterWindow("Fast Mark Image Tagging", 1024, 768, 0)
 	if *directory != "" {
