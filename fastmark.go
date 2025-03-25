@@ -366,7 +366,7 @@ func loop() {
 							drawingRect = false
 						}
 						canvas.AddRect(pos.Add(drawingStart), pos.Add(end), color.RGBA{255, 0, 0, 255}, 0, 0, 2)
-					} else if giu.IsMouseDown(giu.MouseButtonLeft) {
+					} else if giu.IsMouseClicked(giu.MouseButtonLeft) {
 						// Get the current screen position of the cursor
 						scr := giu.GetMousePos().Sub(pos)
 						if scr.X >= 0 && scr.X <= imageWidth && scr.Y >= 0 && scr.Y <= imageHeight {
