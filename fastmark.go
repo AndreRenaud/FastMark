@@ -64,7 +64,7 @@ type Metadata struct {
 }
 
 func (m Metadata) Summary() string {
-	summary := fmt.Sprintf("Total: %d, Scanned %d (%d%%) Categorised: %d (%d%%)", m.Total, m.Scanned, m.Scanned*100/m.Total, m.Categorised, metadata.Percent())
+	summary := fmt.Sprintf("Total: %d, Scanned %d (%d%%) Categorised: %d (%d%%)", m.Total, m.Scanned, m.ScannedPercent(), m.Categorised, metadata.Percent())
 
 	return summary
 }
@@ -87,6 +87,13 @@ func (m Metadata) Percent() int {
 		return 0
 	}
 	return m.Categorised * 100 / m.Total
+}
+
+func (m Metadata) ScannedPercent() int {
+	if m.Total == 0 {
+		return 0
+	}
+	return m.Scanned * 100 / m.Total
 }
 
 func updateMetadataWorker(files <-chan string, done *sync.WaitGroup) error {
