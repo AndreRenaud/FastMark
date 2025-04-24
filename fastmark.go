@@ -492,6 +492,9 @@ func main() {
 		log.Printf("Error setting icon: %s", err)
 	}
 
+	// Styling
+	wnd.SetStyle(FastMarkTheme())
+
 	updateFiles()
 	wnd.Run(loop)
 }
