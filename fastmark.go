@@ -44,6 +44,12 @@ var (
 
 	labels []string
 
+	filter string
+
+	// autoContrast stretches each displayed image's histogram so the
+	// darkest value maps to 0 and the brightest to 255.
+	autoContrast bool
+
 	wnd *giu.MasterWindow
 
 	backend storage.Storage
@@ -51,6 +57,14 @@ var (
 	metadata Metadata
 
 	scrollTrigger bool
+
+	// rowPitch is the vertical distance between consecutive file rows,
+	// measured from the rendered list. It lets us scroll the (clipped)
+	// FastMode table to an arbitrary row, even one that isn't currently
+	// built because it's off-screen.
+	rowPitch     float32
+	lastRowY     float32
+	lastRowIndex int
 )
 
 type Metadata struct {
@@ -158,6 +172,66 @@ func loadImage(filename string) (image.Image, error) {
 	return img, nil
 }
 
+// autoContrastImage returns a copy of src with its histogram stretched so
+// that the darkest channel value present maps to 0 and the brightest to 255,
+// applying the same linear mapping to every channel to preserve colour.
+func autoContrastImage(src image.Image) image.Image {
+	bounds := src.Bounds()
+
+	// RGBA() reports channels in the range [0, 0xffff].
+	minV := uint32(0xffff)
+	maxV := uint32(0)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			r, g, b, _ := src.At(x, y).RGBA()
+			for _, c := range [3]uint32{r, g, b} {
+				if c < minV {
+					minV = c
+				}
+				if c > maxV {
+					maxV = c
+				}
+			}
+		}
+	}
+
+	// Flat or single-colour image: nothing to stretch.
+	if maxV <= minV {
+		return src
+	}
+
+	scale := float64(0xffff) / float64(maxV-minV)
+	stretch := func(c uint32) uint8 {
+		v := float64(c-minV) * scale
+		if v > 0xffff {
+			v = 0xffff
+		}
+		return uint8(uint32(v) >> 8)
+	}
+
+	dst := image.NewRGBA(bounds)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			r, g, b, a := src.At(x, y).RGBA()
+			dst.SetRGBA(x, y, color.RGBA{stretch(r), stretch(g), stretch(b), uint8(a >> 8)})
+		}
+	}
+	return dst
+}
+
+// regenerateTexture rebuilds currentImageTexture from img, applying the
+// auto-contrast stretch when it is enabled. Safe to call from a goroutine.
+func regenerateTexture(img image.Image) {
+	display := img
+	if autoContrast {
+		display = autoContrastImage(img)
+	}
+	giu.EnqueueNewTextureFromRgba(display, func(t *giu.Texture) {
+		currentImageTexture = t
+		giu.Update()
+	})
+}
+
 func drawFile(filename string) {
 	currentImageTexture = nil
 	currentImage = nil
@@ -166,11 +240,8 @@ func drawFile(filename string) {
 		if img, err := loadImage("images/" + filename); err != nil {
 			log.Printf("Error loading image %s: %s", filename, err)
 		} else {
-			giu.EnqueueNewTextureFromRgba(img, func(t *giu.Texture) {
-				currentImageTexture = t
-				currentImage = img
-				giu.Update()
-			})
+			currentImage = img
+			regenerateTexture(img)
 		}
 	}()
 
@@ -216,6 +287,22 @@ func selectFile(i int) {
 	giu.Update()
 }
 
+// jumpTo selects the first file that contains the filter value as a
+// substring, leaving the full list displayed so adjacent images can be
+// compared with the up/down keys.
+func jumpTo() {
+	if filter == "" {
+		return
+	}
+	needle := strings.ToLower(filter)
+	for i, f := range files {
+		if strings.Contains(strings.ToLower(f), needle) {
+			selectFile(i)
+			return
+		}
+	}
+}
+
 func updateFiles() {
 	files = []string{}
 
@@ -241,11 +328,31 @@ func updateFiles() {
 		})
 		//fileRows[i] = giu.TableRow(fileLabels[i])
 		fileRows[i] = giu.TableRow(giu.Custom(func() {
+			// Measure the exact row pitch from consecutive visible rows.
+			// FastMode's clipper builds rows in ascending order, so the
+			// gap between adjacent indices gives the true spacing.
+			y := imgui.CursorScreenPos().Y
+			if i == lastRowIndex+1 && y > lastRowY {
+				rowPitch = y - lastRowY
+			}
+			lastRowY = y
+			lastRowIndex = i
+
 			fileLabels[i].Build()
-			if scrollTrigger && selectedIndex == i {
-				log.Printf("Scrolling to %d", i)
-				imgui.SetScrollHereYV(0.5)
-				scrollTrigger = false
+
+			if scrollTrigger {
+				if rowPitch > 0 {
+					// Scroll so the selected row is centred. This works
+					// even when the target row is clipped out (off-screen),
+					// which SetScrollHereY cannot do.
+					target := float32(selectedIndex)*rowPitch - imgui.WindowHeight()/2 + rowPitch/2
+					imgui.SetScrollYFloat(target)
+					scrollTrigger = false
+				} else if selectedIndex == i {
+					// Fallback before the pitch has been measured.
+					imgui.SetScrollHereYV(0.5)
+					scrollTrigger = false
+				}
 			}
 		}))
 	}
@@ -315,6 +422,7 @@ func loop() {
 
 	window.Layout(
 		giu.Label(fmt.Sprintf("Fast Mark image tagging %d/%d images", selectedIndex, len(files))),
+		giu.InputText(&filter).Label("Jump to").Hint("Substring to jump to").OnChange(jumpTo),
 		giu.SplitLayout(giu.DirectionVertical, &splitPos,
 			giu.Table().
 				FastMode(true).
@@ -324,6 +432,11 @@ func loop() {
 			giu.Column(
 				giu.Row(
 					giu.Button("Change Directory").OnClick(selectDirectory),
+					giu.Checkbox("Auto contrast", &autoContrast).OnChange(func() {
+						if currentImage != nil {
+							regenerateTexture(currentImage)
+						}
+					}),
 					giu.Label(backend.Describe()),
 				),
 				giu.Labelf("Current file: %s", file),
@@ -342,7 +455,7 @@ func loop() {
 					imageWidth := windowWidth - canvasPos.X - 10
 					imageHeight := windowHeight - canvasPos.Y - 10
 
-					if currentImageTexture != nil {
+					if currentImageTexture != nil && currentImage != nil {
 						// Make sure we maintain the ratio
 						size := currentImage.Bounds()
 						if float32(imageWidth)/float32(size.Dx()) < float32(imageHeight)/float32(size.Dy()) {
@@ -493,7 +606,9 @@ func main() {
 	}
 
 	// Styling
-	wnd.SetStyle(FastMarkTheme())
+	//wnd.SetStyle(FastMarkTheme())
+	wnd.SetStyle(Win98Theme())
+	//wnd.SetStyle(LightTheme())
 
 	updateFiles()
 	wnd.Run(loop)

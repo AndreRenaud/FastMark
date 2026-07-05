@@ -85,7 +85,7 @@ func LoadRegionList(backend storage.Storage, filename string) (RegionList, error
 			continue
 		}
 
-		if !region.IsValid() {
+		if !region.Normalize() {
 			log.Printf("Invalid region: %#v in %s", columns, filename)
 			continue
 		}
@@ -101,6 +101,9 @@ func LoadRegionList(backend storage.Storage, filename string) (RegionList, error
 
 func (r RegionList) Save() error {
 	log.Printf("Saving regions to %s", r.filename)
+	if r.filename == "" {
+		return fmt.Errorf("No filename specified for saving regions")
+	}
 	if cache != nil {
 		cache.Add(r.filename, r)
 	}
@@ -140,7 +143,7 @@ func (r Region) Color() color.Color {
 	return RegionIndexColor(r.index)
 }
 
-func (r Region) IsValid() bool {
+func (r *Region) Normalize() bool {
 	// Give a bit of floating point tolerance
 	lowLimit := -0.0001
 	highLimit := 1.0001
@@ -152,13 +155,20 @@ func (r Region) IsValid() bool {
 		log.Printf("Invalid x/y mid: %#v", r)
 		return false
 	}
+	// Clamp regions that spill past the edges rather than discarding them.
 	if r.xMid-r.width/2 < lowLimit || r.xMid+r.width/2 > highLimit {
-		log.Printf("Invalid x range: %#v %f, %f", r, r.xMid-r.width/2, r.xMid+r.width/2)
-		return false
+		log.Printf("Clamping out-of-bounds x range: %#v %f, %f", r, r.xMid-r.width/2, r.xMid+r.width/2)
+		left := max(r.xMid-r.width/2, 0)
+		right := min(r.xMid+r.width/2, 1)
+		r.xMid = (left + right) / 2
+		r.width = right - left
 	}
 	if r.yMid-r.height/2 < lowLimit || r.yMid+r.height/2 > highLimit {
-		log.Printf("Invalid y range: %#v %f %f", r, r.yMid-r.height/2, r.yMid+r.height/2)
-		return false
+		log.Printf("Clamping out-of-bounds y range: %#v %f %f", r, r.yMid-r.height/2, r.yMid+r.height/2)
+		top := max(r.yMid-r.height/2, 0)
+		bottom := min(r.yMid+r.height/2, 1)
+		r.yMid = (top + bottom) / 2
+		r.height = bottom - top
 	}
 
 	// TODO: Is this legit? These are too small to be useful
@@ -169,7 +179,7 @@ func (r Region) IsValid() bool {
 }
 
 func (r *RegionList) AddRegion(region Region) {
-	if region.IsValid() {
+	if region.Normalize() {
 		log.Printf("Added new region %#v", region)
 		r.Regions = append(r.Regions, region)
 		r.Save()
