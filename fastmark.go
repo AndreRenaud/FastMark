@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"image"
@@ -17,55 +18,21 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 
-	"github.com/AllenDang/cimgui-go/imgui"
-	"github.com/AllenDang/giu"
 	"github.com/AndreRenaud/fastmark/storage"
-	"github.com/sqweek/dialog"
+	"github.com/guigui-gui/guigui"
+	"github.com/guigui-gui/guigui/basicwidget"
+	"github.com/hajimehoshi/dialog"
+	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/inpututil"
+	"golang.org/x/image/draw"
 )
 
 //go:embed icon-128.png
 var iconData []byte
 
-var (
-	files      []string
-	fileRows   []*giu.TableRowWidget
-	fileLabels []*giu.SelectableWidget
-
-	currentImageTexture *giu.Texture
-	currentImage        image.Image
-	selectedIndex       int
-	currentRegions      RegionList
-
-	drawingRect  bool
-	drawingStart image.Point
-	drawingIndex int
-
-	splitPos = float32(300)
-
-	labels []string
-
-	filter string
-
-	// autoContrast stretches each displayed image's histogram so the
-	// darkest value maps to 0 and the brightest to 255.
-	autoContrast bool
-
-	wnd *giu.MasterWindow
-
-	backend storage.Storage
-
-	metadata Metadata
-
-	scrollTrigger bool
-
-	// rowPitch is the vertical distance between consecutive file rows,
-	// measured from the rendered list. It lets us scroll the (clipped)
-	// FastMode table to an arbitrary row, even one that isn't currently
-	// built because it's off-screen.
-	rowPitch     float32
-	lastRowY     float32
-	lastRowIndex int
-)
+// maxImageDimension caps decoded images so they stay within common GPU
+// texture size limits.
+const maxImageDimension = 8192
 
 type Metadata struct {
 	Total          int
@@ -73,27 +40,10 @@ type Metadata struct {
 	Scanned        int
 	TotalRegions   int
 	CategoryTotals []int
-
-	mutex sync.Mutex
 }
 
 func (m Metadata) Summary() string {
-	summary := fmt.Sprintf("Total: %d, Scanned %d (%d%%) Categorised: %d (%d%%)", m.Total, m.Scanned, m.ScannedPercent(), m.Categorised, metadata.Percent())
-
-	return summary
-}
-
-func (m Metadata) CategorySummary() string {
-	summary := ""
-	for i := range len(m.CategoryTotals) {
-		percent := 0.0
-		if m.Total > 0 {
-			percent = float64(m.CategoryTotals[i]*100) / float64(m.Total)
-		}
-		summary += fmt.Sprintf("%s: %d %.1f%%\n", labelName(i), m.CategoryTotals[i], percent)
-	}
-
-	return summary
+	return fmt.Sprintf("Total: %d, Scanned %d (%d%%) Categorised: %d (%d%%)", m.Total, m.Scanned, m.ScannedPercent(), m.Categorised, m.Percent())
 }
 
 func (m Metadata) Percent() int {
@@ -110,66 +60,128 @@ func (m Metadata) ScannedPercent() int {
 	return m.Scanned * 100 / m.Total
 }
 
-func updateMetadataWorker(files <-chan string, done *sync.WaitGroup) error {
-	for file := range files {
-		ext := filepath.Ext(file)
-		labelFile := filepath.Join("labels", strings.TrimSuffix(file, ext)+".txt")
-		regions, err := LoadRegionList(backend, labelFile)
-		if err != nil {
-			return err
-		}
-		metadata.mutex.Lock()
-		for _, region := range regions.Regions {
-			if region.index >= 0 && region.index < len(metadata.CategoryTotals) {
-				metadata.CategoryTotals[region.index]++
-			}
-			metadata.TotalRegions++
-		}
-		if len(regions.Regions) > 0 {
-			metadata.Categorised++
-		}
-		metadata.Scanned++
-		metadata.mutex.Unlock()
-	}
-	done.Done()
-	return nil
+// decodedImage is the result of an asynchronous image decode. display is what
+// should be shown (possibly contrast-stretched); source is the original
+// decode, kept so auto-contrast can be re-applied without re-reading the file.
+// source is nil when only the contrast setting changed.
+type decodedImage struct {
+	gen     uint64
+	source  image.Image
+	display image.Image
 }
 
-func updateMetadata() {
-	metadata = Metadata{}
-	metadata.CategoryTotals = make([]int, len(labels))
-	metadata.Total = len(files)
-	filesChan := make(chan string, len(files))
-	wg := sync.WaitGroup{}
-	// This is mostly blocked by file I/O, especially on network drives,
-	// so run a bunch of parallel workers to compensate
-	workerCount := 50
-	wg.Add(workerCount)
-	for range workerCount {
-		go updateMetadataWorker(filesChan, &wg)
-	}
-	for _, file := range files {
-		filesChan <- file
-	}
-	close(filesChan)
-	wg.Wait()
+// appModel holds all application state. It is only mutated on the main
+// goroutine (input handlers and Tick); background goroutines communicate
+// results back over the decoded/chosenDirs channels. metadata is the
+// exception: scan workers update it directly under metadataMu.
+type appModel struct {
+	backend storage.Storage
+
+	files    []string
+	labels   []string
+	filesGen int
+
+	selectedIndex int
+	filter        string
+
+	currentImage image.Image   // decoded source of the selected file
+	displayImage *ebiten.Image // texture currently shown by the editor
+	imageGen     uint64        // bumped whenever displayImage changes
+	loadGen      uint64        // bumped on navigation; stale decodes are dropped
+
+	currentRegions RegionList
+	drawingIndex   int
+
+	// autoContrast stretches each displayed image's histogram so the
+	// darkest value maps to 0 and the brightest to 255.
+	autoContrast bool
+
+	metadataMu  sync.Mutex
+	metadata    Metadata
+	metadataGen int
+
+	decoded    chan decodedImage
+	chosenDirs chan string
 }
 
-func labelName(index int) string {
-	if index >= 0 && index < len(labels) {
-		return labels[index]
+func (m *appModel) labelName(index int) string {
+	if index >= 0 && index < len(m.labels) {
+		return m.labels[index]
 	}
 	return "unknown"
 }
 
-func loadImage(filename string) (image.Image, error) {
-	f, err := backend.Open(filename)
-	if err != nil {
-		return nil, err
+func (m *appModel) metadataSnapshot() Metadata {
+	m.metadataMu.Lock()
+	defer m.metadataMu.Unlock()
+	snap := m.metadata
+	snap.CategoryTotals = slices.Clone(snap.CategoryTotals)
+	return snap
+}
+
+func (m *appModel) categorySummary(meta Metadata) string {
+	summary := ""
+	for i := range len(meta.CategoryTotals) {
+		percent := 0.0
+		if meta.Total > 0 {
+			percent = float64(meta.CategoryTotals[i]*100) / float64(meta.Total)
+		}
+		summary += fmt.Sprintf("%s: %d %.1f%%\n", m.labelName(i), meta.CategoryTotals[i], percent)
 	}
-	defer f.Close()
-	img, _, err := image.Decode(f)
-	return img, nil
+	return summary
+}
+
+// startMetadataScan rescans every label file in the background, updating
+// m.metadata as it goes so progress can be displayed live.
+func (m *appModel) startMetadataScan() {
+	m.metadataMu.Lock()
+	m.metadataGen++
+	gen := m.metadataGen
+	m.metadata = Metadata{Total: len(m.files), CategoryTotals: make([]int, len(m.labels))}
+	m.metadataMu.Unlock()
+
+	files := slices.Clone(m.files)
+	backend := m.backend
+
+	go func() {
+		filesChan := make(chan string, len(files))
+		var wg sync.WaitGroup
+		// This is mostly blocked by file I/O, especially on network drives,
+		// so run a bunch of parallel workers to compensate
+		const workerCount = 50
+		wg.Add(workerCount)
+		for range workerCount {
+			go func() {
+				defer wg.Done()
+				for file := range filesChan {
+					ext := filepath.Ext(file)
+					labelFile := filepath.Join("labels", strings.TrimSuffix(file, ext)+".txt")
+					// An error just means the image has no label file yet;
+					// count it as scanned but uncategorised.
+					regions, _ := LoadRegionList(backend, labelFile)
+					m.metadataMu.Lock()
+					if m.metadataGen == gen {
+						for _, region := range regions.Regions {
+							if region.index >= 0 && region.index < len(m.metadata.CategoryTotals) {
+								m.metadata.CategoryTotals[region.index]++
+							}
+							m.metadata.TotalRegions++
+						}
+						if len(regions.Regions) > 0 {
+							m.metadata.Categorised++
+						}
+						m.metadata.Scanned++
+					}
+					m.metadataMu.Unlock()
+				}
+			}()
+		}
+		for _, file := range files {
+			filesChan <- file
+		}
+		close(filesChan)
+		wg.Wait()
+	}()
 }
 
 // autoContrastImage returns a copy of src with its histogram stretched so
@@ -219,163 +231,89 @@ func autoContrastImage(src image.Image) image.Image {
 	return dst
 }
 
-// regenerateTexture rebuilds currentImageTexture from img, applying the
-// auto-contrast stretch when it is enabled. Safe to call from a goroutine.
-func regenerateTexture(img image.Image) {
-	display := img
-	if autoContrast {
-		display = autoContrastImage(img)
+func loadImage(backend storage.Storage, filename string) (image.Image, error) {
+	f, err := backend.Open(filename)
+	if err != nil {
+		return nil, err
 	}
-	giu.EnqueueNewTextureFromRgba(display, func(t *giu.Texture) {
-		currentImageTexture = t
-		giu.Update()
-	})
+	defer f.Close()
+	img, _, err := image.Decode(f)
+	if err != nil {
+		return nil, err
+	}
+	return capImageSize(img, maxImageDimension), nil
 }
 
-func drawFile(filename string) {
-	currentImageTexture = nil
-	currentImage = nil
+// capImageSize downscales img so neither dimension exceeds maxDim.
+func capImageSize(img image.Image, maxDim int) image.Image {
+	b := img.Bounds()
+	if b.Dx() <= maxDim && b.Dy() <= maxDim {
+		return img
+	}
+	scale := min(float64(maxDim)/float64(b.Dx()), float64(maxDim)/float64(b.Dy()))
+	w := max(1, int(float64(b.Dx())*scale))
+	h := max(1, int(float64(b.Dy())*scale))
+	log.Printf("Downscaling %dx%d image to %dx%d", b.Dx(), b.Dy(), w, h)
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	draw.ApproxBiLinear.Scale(dst, dst.Bounds(), img, b, draw.Over, nil)
+	return dst
+}
+
+// loadFile starts an asynchronous decode of filename and synchronously loads
+// its regions. The decode result arrives on m.decoded and is applied in
+// Root.Tick (ebiten.NewImageFromImage must run on the main goroutine).
+func (m *appModel) loadFile(filename string) {
+	m.currentImage = nil
+	m.displayImage = nil
+	m.imageGen++
+	m.loadGen++
+	gen := m.loadGen
+	backend := m.backend
+	autoContrast := m.autoContrast
 
 	go func() {
-		if img, err := loadImage("images/" + filename); err != nil {
+		img, err := loadImage(backend, "images/"+filename)
+		if err != nil {
 			log.Printf("Error loading image %s: %s", filename, err)
-		} else {
-			currentImage = img
-			regenerateTexture(img)
+			return
 		}
+		display := img
+		if autoContrast {
+			display = autoContrastImage(img)
+		}
+		m.decoded <- decodedImage{gen: gen, source: img, display: display}
 	}()
 
 	ext := filepath.Ext(filename)
-
 	labelFile := filepath.Join("labels", strings.TrimSuffix(filename, ext)+".txt")
 
 	var err error
-	currentRegions, err = LoadRegionList(backend, labelFile)
+	m.currentRegions, err = LoadRegionList(m.backend, labelFile)
 	if err != nil {
 		log.Printf("Error loading regions for %s: %s", filename, err)
 	}
 }
 
-func selectDirectory() {
-	newDirectory, err := dialog.Directory().Title("Load images").Browse()
-	if err != nil {
-		log.Printf("Error selecting directory: %s", err)
+// regenerateDisplayImage re-applies the auto-contrast setting to the cached
+// source image in the background.
+func (m *appModel) regenerateDisplayImage() {
+	img := m.currentImage
+	if img == nil {
 		return
 	}
-	backend = storage.NewStorage(newDirectory)
-	updateFiles()
+	gen := m.loadGen
+	autoContrast := m.autoContrast
+	go func() {
+		display := img
+		if autoContrast {
+			display = autoContrastImage(img)
+		}
+		m.decoded <- decodedImage{gen: gen, display: display}
+	}()
 }
 
-func selectFile(i int) {
-	if i < 0 || i >= len(files) {
-		log.Printf("Invalid file index %d (max %d)", i, len(files))
-		return
-	}
-	if selectedIndex >= 0 && selectedIndex < len(fileLabels) {
-		old := fileLabels[selectedIndex]
-		if old != nil {
-			old.Selected(false)
-		}
-	}
-	file := files[i]
-	selectedIndex = i
-	fileLabels[i].Selected(true)
-	drawingRect = false
-	drawFile(file)
-
-	scrollTrigger = true
-	giu.Update()
-}
-
-// jumpTo selects the first file that contains the filter value as a
-// substring, leaving the full list displayed so adjacent images can be
-// compared with the up/down keys.
-func jumpTo() {
-	if filter == "" {
-		return
-	}
-	needle := strings.ToLower(filter)
-	for i, f := range files {
-		if strings.Contains(strings.ToLower(f), needle) {
-			selectFile(i)
-			return
-		}
-	}
-}
-
-func updateFiles() {
-	files = []string{}
-
-	match, err := backend.Glob("images", "*")
-	if err != nil {
-		log.Printf("Error listing files: %s", err)
-	} else {
-		for _, m := range match {
-			ext := strings.ToLower(filepath.Ext(m))
-			if ext == ".jpg" || ext == ".jpeg" || ext == ".png" {
-				files = append(files, filepath.Base(m))
-			}
-		}
-	}
-	slices.Sort(files)
-	fileRows = make([]*giu.TableRowWidget, len(files))
-	fileLabels = make([]*giu.SelectableWidget, len(files))
-	for i, file := range files {
-		i := i
-		fileLabels[i] = giu.Selectable(file)
-		fileLabels[i].OnClick(func() {
-			selectFile(i)
-		})
-		//fileRows[i] = giu.TableRow(fileLabels[i])
-		fileRows[i] = giu.TableRow(giu.Custom(func() {
-			// Measure the exact row pitch from consecutive visible rows.
-			// FastMode's clipper builds rows in ascending order, so the
-			// gap between adjacent indices gives the true spacing.
-			y := imgui.CursorScreenPos().Y
-			if i == lastRowIndex+1 && y > lastRowY {
-				rowPitch = y - lastRowY
-			}
-			lastRowY = y
-			lastRowIndex = i
-
-			fileLabels[i].Build()
-
-			if scrollTrigger {
-				if rowPitch > 0 {
-					// Scroll so the selected row is centred. This works
-					// even when the target row is clipped out (off-screen),
-					// which SetScrollHereY cannot do.
-					target := float32(selectedIndex)*rowPitch - imgui.WindowHeight()/2 + rowPitch/2
-					imgui.SetScrollYFloat(target)
-					scrollTrigger = false
-				} else if selectedIndex == i {
-					// Fallback before the pitch has been measured.
-					imgui.SetScrollHereYV(0.5)
-					scrollTrigger = false
-				}
-			}
-		}))
-	}
-
-	file, err := backend.Open("labels.txt")
-	if err != nil {
-		log.Printf("Error opening labels file: %s", err)
-	} else {
-		defer file.Close()
-		scanner := bufio.NewScanner(file)
-		labels = nil
-		for scanner.Scan() {
-			labels = append(labels, scanner.Text())
-		}
-	}
-
-	go updateMetadata()
-
-	selectFile(0)
-}
-
-func getClosestRegion(click image.Point, imageWidth int, imageHeight int) int {
-	for i, region := range currentRegions.Regions {
+func (m *appModel) getClosestRegion(click image.Point, imageWidth int, imageHeight int) int {
+	for i, region := range m.currentRegions.Regions {
 		w := int(float32(region.width) * float32(imageWidth))
 		h := int(float32(region.height) * float32(imageHeight))
 		x := int(float32(region.xMid)*float32(imageWidth)) - w/2
@@ -387,7 +325,7 @@ func getClosestRegion(click image.Point, imageWidth int, imageHeight int) int {
 	}
 
 	// If we're close to a region, and it's small, then assume we just missed and select it
-	for i, region := range currentRegions.Regions {
+	for i, region := range m.currentRegions.Regions {
 		w := int(float32(region.width) * float32(imageWidth))
 		h := int(float32(region.height) * float32(imageHeight))
 		x := int(float32(region.xMid)*float32(imageWidth)) - w/2
@@ -403,185 +341,330 @@ func getClosestRegion(click image.Point, imageWidth int, imageHeight int) int {
 	return -1
 }
 
-func loop() {
-	window := giu.SingleWindow()
-	var file string
-	if selectedIndex >= 0 && selectedIndex < len(files) {
-		file = files[selectedIndex]
+type Root struct {
+	guigui.DefaultWidget
+
+	model appModel
+
+	background  basicwidget.Background
+	statusText  basicwidget.Text
+	jumpLabel   basicwidget.Text
+	jumpInput   basicwidget.TextInput
+	fileList    basicwidget.List[int]
+	split       splitter
+	editorPanel basicwidget.Panel
+	pane        editorPane
+
+	sidebarWidth   int
+	dragStartWidth int
+	contentWidth   int
+
+	builtFilesGen int
+
+	rootItems    []guigui.LinearLayoutItem
+	jumpRowItems []guigui.LinearLayoutItem
+	mainRowItems []guigui.LinearLayoutItem
+}
+
+// WriteStateKey exposes the state that can change outside input handlers
+// (decode results and directory changes applied in Tick, metadata updated by
+// scan workers) so the framework rebuilds when it changes.
+func (r *Root) WriteStateKey(w *guigui.StateKeyWriter) {
+	m := &r.model
+	w.WriteInt(m.selectedIndex)
+	w.WriteInt(m.filesGen)
+	w.WriteInt(len(m.files))
+	w.WriteUint64(m.imageGen)
+	w.WriteInt(m.drawingIndex)
+	w.WriteBool(m.autoContrast)
+	w.WriteInt(len(m.currentRegions.Regions))
+	if m.backend != nil {
+		w.WriteString(m.backend.Describe())
 	}
+	meta := m.metadataSnapshot()
+	w.WriteInt(meta.Total)
+	w.WriteInt(meta.Scanned)
+	w.WriteInt(meta.Categorised)
+	w.WriteInt(meta.TotalRegions)
+	for _, c := range meta.CategoryTotals {
+		w.WriteInt(c)
+	}
+}
 
-	windowWidth, windowHeight := wnd.GetSize()
+func (r *Root) Build(context *guigui.Context, adder *guigui.ChildAdder) error {
+	adder.AddWidget(&r.background)
+	adder.AddWidget(&r.statusText)
+	adder.AddWidget(&r.jumpLabel)
+	adder.AddWidget(&r.jumpInput)
+	adder.AddWidget(&r.fileList)
+	adder.AddWidget(&r.split)
+	adder.AddWidget(&r.editorPanel)
 
-	var regionSummary string
-	for i, region := range currentRegions.Regions {
-		if i > 0 {
-			regionSummary += ", "
+	m := &r.model
+	context.SetButtonInputReceptive(r, true)
+
+	r.statusText.SetValue(fmt.Sprintf("Fast Mark image tagging %d/%d images", m.selectedIndex, len(m.files)))
+
+	r.jumpLabel.SetValue("Jump to")
+	r.jumpLabel.SetVerticalAlign(basicwidget.VerticalAlignMiddle)
+	r.jumpInput.SetPlaceholder("Substring to jump to")
+	r.jumpInput.OnValueChanged(func(context *guigui.Context, text string, committed bool) {
+		m.filter = text
+		r.jumpTo()
+	})
+
+	if r.builtFilesGen != m.filesGen {
+		r.fileList.SetItemsByStrings(m.files)
+		r.builtFilesGen = m.filesGen
+	}
+	r.fileList.OnItemSelected(func(context *guigui.Context, index int) {
+		if index != m.selectedIndex {
+			r.selectFile(index)
 		}
-		regionSummary += fmt.Sprintf("%d: %s mid=%.3f,%.3f size=%.3fx%.3f", i, labelName(region.index), region.xMid, region.yMid, region.width, region.height)
+	})
+
+	r.split.OnDragStart(func() {
+		r.dragStartWidth = r.sidebarWidth
+	})
+	r.split.OnDrag(func(deltaX int) {
+		u := basicwidget.UnitSize(context)
+		width := r.dragStartWidth + deltaX
+		width = max(width, u*4)
+		if r.contentWidth > 0 {
+			width = min(width, r.contentWidth-u*8)
+		}
+		r.sidebarWidth = width
+	})
+
+	r.editorPanel.SetContent(&r.pane)
+	r.editorPanel.SetContentConstraints(basicwidget.PanelContentConstraintsFixedWidth)
+	r.pane.SetModel(m)
+
+	return nil
+}
+
+func (r *Root) Layout(context *guigui.Context, widgetBounds *guigui.WidgetBounds, layouter *guigui.ChildLayouter) {
+	u := basicwidget.UnitSize(context)
+
+	r.contentWidth = widgetBounds.Bounds().Dx()
+	if r.sidebarWidth == 0 {
+		r.sidebarWidth = u * 12
 	}
 
-	window.Layout(
-		giu.Label(fmt.Sprintf("Fast Mark image tagging %d/%d images", selectedIndex, len(files))),
-		giu.InputText(&filter).Label("Jump to").Hint("Substring to jump to").OnChange(jumpTo),
-		giu.SplitLayout(giu.DirectionVertical, &splitPos,
-			giu.Table().
-				FastMode(true).
-				Columns(giu.TableColumn("Files")).
-				Rows(fileRows...).
-				Size(giu.Auto, giu.Auto),
-			giu.Column(
-				giu.Row(
-					giu.Button("Change Directory").OnClick(selectDirectory),
-					giu.Checkbox("Auto contrast", &autoContrast).OnChange(func() {
-						if currentImage != nil {
-							regenerateTexture(currentImage)
-						}
-					}),
-					giu.Label(backend.Describe()),
-				),
-				giu.Labelf("Current file: %s", file),
-				giu.Labelf("Regions: %s", regionSummary),
-				giu.Style().SetColor(giu.StyleColorText, RegionIndexColor(drawingIndex)).To(
-					giu.Labelf("Drawing label: %d %s (Press 1-9 to select new type)\n", drawingIndex, labelName(drawingIndex)),
-				),
-				giu.Custom(func() {
-					canvas := giu.GetCanvas()
-					pos := giu.GetCursorScreenPos()
-					wx, wy := window.CurrentPosition()
+	r.jumpRowItems = slices.Delete(r.jumpRowItems, 0, len(r.jumpRowItems))
+	r.jumpRowItems = append(r.jumpRowItems,
+		guigui.LinearLayoutItem{Widget: &r.jumpLabel},
+		guigui.LinearLayoutItem{Widget: &r.jumpInput, Size: guigui.FlexibleSize(1)},
+	)
+	jumpRow := guigui.LinearLayout{
+		Direction: guigui.LayoutDirectionHorizontal,
+		Items:     r.jumpRowItems,
+		Gap:       u / 4,
+	}
 
-					canvasPos := image.Point{X: pos.X - int(wx), Y: pos.Y - int(wy)}
+	r.mainRowItems = slices.Delete(r.mainRowItems, 0, len(r.mainRowItems))
+	r.mainRowItems = append(r.mainRowItems,
+		guigui.LinearLayoutItem{Widget: &r.fileList, Size: guigui.FixedSize(r.sidebarWidth)},
+		guigui.LinearLayoutItem{Widget: &r.split, Size: guigui.FixedSize(u / 3)},
+		guigui.LinearLayoutItem{Widget: &r.editorPanel, Size: guigui.FlexibleSize(1)},
+	)
+	mainRow := guigui.LinearLayout{
+		Direction: guigui.LayoutDirectionHorizontal,
+		Items:     r.mainRowItems,
+	}
 
-					// Draw the image as big as the remaining space with a small border
-					imageWidth := windowWidth - canvasPos.X - 10
-					imageHeight := windowHeight - canvasPos.Y - 10
-
-					if currentImageTexture != nil && currentImage != nil {
-						// Make sure we maintain the ratio
-						size := currentImage.Bounds()
-						if float32(imageWidth)/float32(size.Dx()) < float32(imageHeight)/float32(size.Dy()) {
-							imageHeight = int(float32(size.Dy()) * float32(imageWidth) / float32(size.Dx()))
-						} else {
-							imageWidth = int(float32(size.Dx()) * float32(imageHeight) / float32(size.Dy()))
-						}
-						max := pos.Add(image.Point{X: imageWidth, Y: imageHeight})
-						canvas.AddImage(currentImageTexture, pos, max)
-					}
-					giu.SetCursorScreenPos(pos.Add(image.Point{X: 0, Y: imageHeight}))
-					// Check if the user has stopped drawing
-					if drawingRect {
-						end := giu.GetMousePos().Sub(pos)
-						if !giu.IsMouseDown(giu.MouseButtonLeft) {
-							// Create a new well formed region clamped within the image
-							newRect := image.Rect(drawingStart.X, drawingStart.Y, end.X, end.Y)
-							newRect = newRect.Intersect(image.Rect(0, 0, imageWidth, imageHeight)).Canon()
-							log.Printf("New rect: %v", newRect)
-							newRegion := Region{
-								xMid:   (float64(newRect.Dx())/2 + float64(newRect.Min.X)) / float64(imageWidth),
-								yMid:   (float64(newRect.Dy())/2 + float64(newRect.Min.Y)) / float64(imageHeight),
-								width:  float64(newRect.Dx()) / float64(imageWidth),
-								height: float64(newRect.Dy()) / float64(imageHeight),
-								index:  drawingIndex, // TODO: Make this configurable
-							}
-							currentRegions.AddRegion(newRegion)
-							drawingRect = false
-						}
-						canvas.AddRect(pos.Add(drawingStart), pos.Add(end), color.RGBA{255, 0, 0, 255}, 0, 0, 2)
-					} else if giu.IsMouseClicked(giu.MouseButtonLeft) {
-						// Get the current screen position of the cursor
-						scr := giu.GetMousePos().Sub(pos)
-						if scr.X >= 0 && scr.X <= imageWidth && scr.Y >= 0 && scr.Y <= imageHeight {
-							drawingRect = true
-							drawingStart = scr
-						}
-					}
-
-					if giu.IsMouseClicked(giu.MouseButtonRight) {
-						changeRegion := -1
-						// If we're pressing a number key, change the region type, otherwise delete it
-						for key := giu.Key0; key <= giu.Key9; key++ {
-							if giu.IsKeyDown(key) {
-								changeRegion = int(key - giu.Key0)
-							}
-						}
-						// Find the region that was clicked
-						click := giu.GetMousePos().Sub(pos)
-						index := getClosestRegion(click, imageWidth, imageHeight)
-						if index >= 0 {
-							if changeRegion >= 0 {
-								currentRegions.Regions[index].index = changeRegion
-								// Do this async so we don't block the UI
-								go currentRegions.Save()
-							} else {
-								currentRegions.Remove(index)
-							}
-						}
-					}
-
-					for _, region := range currentRegions.Regions {
-						w := int(float32(region.width) * float32(imageWidth))
-						h := int(float32(region.height) * float32(imageHeight))
-						x := int(float32(region.xMid)*float32(imageWidth)) - w/2
-						y := int(float32(region.yMid)*float32(imageHeight)) - h/2
-						color := region.Color()
-						canvas.AddRect(pos.Add(image.Point{X: x, Y: y}), pos.Add(image.Point{X: x + w, Y: y + h}), color, 0, 0, 2)
-						canvas.AddText(pos.Add(image.Point{X: x + w/2, Y: y - 20}), color, fmt.Sprintf("%s - %d", labelName(region.index), region.index))
-					}
-				}),
-				giu.Label("Press n to find next unlabeled image"),
-				giu.Label(metadata.Summary()),
-				giu.Label(metadata.CategorySummary()),
-				giu.Button("Update Metadata").OnClick(func() {
-					updateMetadata()
-				}),
-			),
-		),
+	r.rootItems = slices.Delete(r.rootItems, 0, len(r.rootItems))
+	r.rootItems = append(r.rootItems,
+		guigui.LinearLayoutItem{Widget: &r.statusText},
+		guigui.LinearLayoutItem{Layout: &jumpRow},
+		guigui.LinearLayoutItem{Layout: &mainRow, Size: guigui.FlexibleSize(1)},
 	)
 
-	if giu.IsKeyPressed(giu.KeyDown) || giu.IsKeyPressed(giu.KeyJ) {
-		selectFile(selectedIndex + 1)
-	}
-	if giu.IsKeyPressed(giu.KeyUp) || giu.IsKeyPressed(giu.KeyK) {
-		selectFile(selectedIndex - 1)
-	}
-	if giu.IsKeyPressed(giu.KeyLeft) || giu.IsKeyPressed(giu.KeyH) {
-		drawingIndex--
-		if drawingIndex < 0 {
-			drawingIndex = 0
-		}
-	}
-	if giu.IsKeyPressed(giu.KeyRight) || giu.IsKeyPressed(giu.KeyL) {
-		drawingIndex++
-		if drawingIndex >= len(labels) {
-			drawingIndex = len(labels) - 1
-		}
-	}
-	for i := 0; i < 9; i++ {
-		if giu.IsKeyPressed(giu.Key(int(giu.Key0) + i)) {
-			if i < len(labels) {
-				drawingIndex = i
+	layouter.LayoutWidget(&r.background, widgetBounds.Bounds())
+	(guigui.LinearLayout{
+		Direction: guigui.LayoutDirectionVertical,
+		Items:     r.rootItems,
+		Gap:       u / 4,
+		Padding:   guigui.Padding{Start: u / 2, Top: u / 2, End: u / 2, Bottom: u / 2},
+	}).LayoutWidgets(context, widgetBounds.Bounds(), layouter)
+}
+
+// Tick applies results from background goroutines on the main goroutine.
+func (r *Root) Tick(context *guigui.Context, widgetBounds *guigui.WidgetBounds) error {
+	m := &r.model
+	for {
+		select {
+		case d := <-m.decoded:
+			if d.gen != m.loadGen {
+				continue // stale result from a file we've navigated away from
 			}
+			if d.source != nil {
+				m.currentImage = d.source
+			}
+			m.displayImage = ebiten.NewImageFromImage(d.display)
+			m.imageGen++
+		case dir := <-m.chosenDirs:
+			m.backend = storage.NewStorage(dir)
+			r.updateFiles()
+		default:
+			return nil
 		}
 	}
-	if giu.IsKeyPressed(giu.KeyN) {
+}
+
+// keyRepeating reports whether key was just pressed or is being held long
+// enough to auto-repeat, matching basicwidget's repeat timing.
+func keyRepeating(key ebiten.Key) bool {
+	if !ebiten.IsKeyPressed(key) {
+		return false
+	}
+	duration := inpututil.KeyPressDuration(key)
+	if duration == 1 {
+		return true
+	}
+	delay := ebiten.TPS() * 2 / 5
+	if duration < delay {
+		return false
+	}
+	return (duration-delay)%4 == 0
+}
+
+func (r *Root) HandleButtonInput(context *guigui.Context, widgetBounds *guigui.WidgetBounds) guigui.HandleInputResult {
+	// Don't treat typing in the jump-to filter as navigation.
+	if context.IsFocusedOrHasFocusedDescendant(&r.jumpInput) {
+		return guigui.HandleInputResult{}
+	}
+
+	m := &r.model
+
+	if keyRepeating(ebiten.KeyDown) || keyRepeating(ebiten.KeyJ) {
+		r.selectFile(m.selectedIndex + 1)
+		return guigui.HandleInputByWidget(r)
+	}
+	if keyRepeating(ebiten.KeyUp) || keyRepeating(ebiten.KeyK) {
+		r.selectFile(m.selectedIndex - 1)
+		return guigui.HandleInputByWidget(r)
+	}
+	if keyRepeating(ebiten.KeyLeft) || keyRepeating(ebiten.KeyH) {
+		if m.drawingIndex > 0 {
+			m.drawingIndex--
+		}
+		return guigui.HandleInputByWidget(r)
+	}
+	if keyRepeating(ebiten.KeyRight) || keyRepeating(ebiten.KeyL) {
+		if m.drawingIndex < len(m.labels)-1 {
+			m.drawingIndex++
+		}
+		return guigui.HandleInputByWidget(r)
+	}
+	for i := range 10 {
+		if inpututil.IsKeyJustPressed(ebiten.KeyDigit0+ebiten.Key(i)) && i < len(m.labels) {
+			m.drawingIndex = i
+			return guigui.HandleInputByWidget(r)
+		}
+	}
+	if keyRepeating(ebiten.KeyN) {
 		direction := 1
-		if giu.IsKeyDown(giu.KeyLeftShift) || giu.IsKeyDown(giu.KeyRightShift) {
+		if ebiten.IsKeyPressed(ebiten.KeyShiftLeft) || ebiten.IsKeyPressed(ebiten.KeyShiftRight) {
 			direction = -1
 		}
-		// Find the next region that's not labeled
-		for i := selectedIndex + direction; i < len(files) && i >= 0; i += direction {
-			filename := files[i]
+		// Find the next image that's not labeled
+		for i := m.selectedIndex + direction; i < len(m.files) && i >= 0; i += direction {
+			filename := m.files[i]
 			ext := filepath.Ext(filename)
-
 			labelFile := filepath.Join("labels", strings.TrimSuffix(filename, ext)+".txt")
-
-			regions, err := LoadRegionList(backend, labelFile)
+			regions, err := LoadRegionList(m.backend, labelFile)
 			if err != nil || len(regions.Regions) == 0 {
 				log.Printf("Found unlabeled image %s", filename)
-				selectFile(i)
+				r.selectFile(i)
 				break
 			}
 		}
+		return guigui.HandleInputByWidget(r)
 	}
+
+	return guigui.HandleInputResult{}
+}
+
+func (r *Root) selectFile(i int) {
+	m := &r.model
+	if i < 0 || i >= len(m.files) {
+		log.Printf("Invalid file index %d (max %d)", i, len(m.files))
+		return
+	}
+	m.selectedIndex = i
+	r.pane.editor.cancelDrawing()
+	// Set the model index before syncing the list so the OnItemSelected
+	// callback this triggers sees an up-to-date model and doesn't recurse.
+	r.fileList.SelectItemByIndex(i)
+	r.fileList.EnsureItemVisibleByIndex(i)
+	m.loadFile(m.files[i])
+}
+
+// jumpTo selects the first file that contains the filter value as a
+// substring, leaving the full list displayed so adjacent images can be
+// compared with the up/down keys.
+func (r *Root) jumpTo() {
+	m := &r.model
+	if m.filter == "" {
+		return
+	}
+	needle := strings.ToLower(m.filter)
+	for i, f := range m.files {
+		if strings.Contains(strings.ToLower(f), needle) {
+			r.selectFile(i)
+			return
+		}
+	}
+}
+
+// selectDirectory shows the native directory picker on a goroutine (it
+// marshals itself to the main thread) and delivers the result to Tick.
+func (m *appModel) selectDirectory() {
+	go func() {
+		newDirectory, err := dialog.Directory().Title("Load images").Browse()
+		if err != nil {
+			if !errors.Is(err, dialog.ErrCancelled) {
+				log.Printf("Error selecting directory: %s", err)
+			}
+			return
+		}
+		m.chosenDirs <- newDirectory
+	}()
+}
+
+func (r *Root) updateFiles() {
+	m := &r.model
+	m.files = nil
+
+	match, err := m.backend.Glob("images", "*")
+	if err != nil {
+		log.Printf("Error listing files: %s", err)
+	} else {
+		for _, f := range match {
+			ext := strings.ToLower(filepath.Ext(f))
+			if ext == ".jpg" || ext == ".jpeg" || ext == ".png" {
+				m.files = append(m.files, filepath.Base(f))
+			}
+		}
+	}
+	slices.Sort(m.files)
+
+	file, err := m.backend.Open("labels.txt")
+	if err != nil {
+		log.Printf("Error opening labels file: %s", err)
+	} else {
+		defer file.Close()
+		scanner := bufio.NewScanner(file)
+		m.labels = nil
+		for scanner.Scan() {
+			m.labels = append(m.labels, scanner.Text())
+		}
+	}
+
+	m.filesGen++
+	m.startMetadataScan()
+	r.selectFile(0)
 }
 
 func main() {
@@ -592,24 +675,28 @@ func main() {
 		log.Printf("Error loading regions: %s", err)
 	}
 
-	wnd = giu.NewMasterWindow("Fast Mark Image Tagging", 1024, 768, 0)
+	root := &Root{}
+	m := &root.model
+	m.decoded = make(chan decodedImage, 8)
+	m.chosenDirs = make(chan string, 1)
 	if *directory != "" {
-		backend = storage.NewStorage(*directory)
+		m.backend = storage.NewStorage(*directory)
 	} else {
-		backend = &storage.DummyStorage{}
+		m.backend = &storage.DummyStorage{}
 	}
-	icon, _, err := image.Decode(bytes.NewReader(iconData))
-	if err == nil {
-		wnd.SetIcon(icon)
+
+	if icon, _, err := image.Decode(bytes.NewReader(iconData)); err == nil {
+		ebiten.SetWindowIcon([]image.Image{icon})
 	} else {
 		log.Printf("Error setting icon: %s", err)
 	}
 
-	// Styling
-	//wnd.SetStyle(FastMarkTheme())
-	wnd.SetStyle(Win98Theme())
-	//wnd.SetStyle(LightTheme())
+	root.updateFiles()
 
-	updateFiles()
-	wnd.Run(loop)
+	if err := guigui.Run(root, &guigui.RunOptions{
+		Title:      "Fast Mark Image Tagging",
+		WindowSize: image.Pt(1024, 768),
+	}); err != nil {
+		log.Fatal(err)
+	}
 }

@@ -19,6 +19,15 @@ For further instructions, refer to project documentation or any tutorials coveri
 ## Demo
 ![FastMark in action](./docs/example.gif)
 
+## Building
+FastMark is written in Go using the [guigui](https://github.com/guigui-gui/guigui) toolkit on top of [Ebitengine](https://ebitengine.org):
+
+```sh
+go build .
+```
+
+On Linux, Ebitengine needs the usual X11/GL development libraries and the native directory picker needs GTK3 (on Debian/Ubuntu: `libgtk-3-dev libasound2-dev libgl1-mesa-dev libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev libxxf86vm-dev pkg-config`).
+
 ## Data layout
 Assumes data is on the filesystem as:
 
