@@ -24,8 +24,21 @@ import (
 	"github.com/hajimehoshi/dialog"
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
+	"golang.design/x/clipboard"
 	"golang.org/x/image/draw"
 )
+
+// clipboardErr records whether clipboard.Init succeeded; Write panics if
+// called after a failed Init, so copyToClipboard checks it first.
+var clipboardErr error
+
+func copyToClipboard(text string) {
+	if clipboardErr != nil {
+		log.Printf("Clipboard unavailable: %s", clipboardErr)
+		return
+	}
+	clipboard.Write(clipboard.FmtText, []byte(text))
+}
 
 //go:embed icon-128.png
 var iconData []byte
@@ -673,6 +686,10 @@ func main() {
 
 	if err := RegionsInit(); err != nil {
 		log.Printf("Error loading regions: %s", err)
+	}
+
+	if clipboardErr = clipboard.Init(); clipboardErr != nil {
+		log.Printf("Error initialising clipboard: %s", clipboardErr)
 	}
 
 	root := &Root{}

@@ -22,7 +22,7 @@ type editorPane struct {
 	contrastCheckbox     basicwidget.Checkbox
 	contrastLabel        basicwidget.Text
 	backendText          basicwidget.Text
-	currentFileText      basicwidget.Text
+	currentFileText      clickableText
 	regionsText          basicwidget.Text
 	drawingLabelText     basicwidget.Text
 	editor               regionEditor
@@ -82,6 +82,11 @@ func (p *editorPane) Build(context *guigui.Context, adder *guigui.ChildAdder) er
 		file = m.files[m.selectedIndex]
 	}
 	p.currentFileText.SetValue(fmt.Sprintf("Current file: %s", file))
+	p.currentFileText.OnClick(func(context *guigui.Context) {
+		if file != "" {
+			copyToClipboard(file)
+		}
+	})
 
 	var regionSummary string
 	for i, region := range m.currentRegions.Regions {
