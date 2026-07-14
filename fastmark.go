@@ -382,7 +382,7 @@ type Root struct {
 // WriteStateKey exposes the state that can change outside input handlers
 // (decode results and directory changes applied in Tick, metadata updated by
 // scan workers) so the framework rebuilds when it changes.
-func (r *Root) WriteStateKey(w *guigui.StateKeyWriter) {
+func (r *Root) WriteStateKey(context *guigui.Context, w *guigui.StateKeyWriter) {
 	m := &r.model
 	w.WriteInt(m.selectedIndex)
 	w.WriteInt(m.filesGen)
