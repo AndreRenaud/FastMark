@@ -49,7 +49,7 @@ func NewSFTPStorage(server string, prefix string) (*SFTPStorage, error) {
 	client, err := sftp.NewClientPipe(rd, wr)
 	if err != nil {
 		cmd.Process.Kill()
-		return nil, nil
+		return nil, err
 	}
 
 	return &SFTPStorage{
@@ -61,9 +61,7 @@ func NewSFTPStorage(server string, prefix string) (*SFTPStorage, error) {
 }
 
 func (s *SFTPStorage) fullPath(filename string) string {
-	path := filepath.Clean(filename)
-	full := filepath.Join(filepath.Clean(s.prefix), path)
-	return full
+	return filepath.Join(s.prefix, filename)
 }
 
 func (s *SFTPStorage) Open(filename string) (io.ReadCloser, error) {
@@ -73,11 +71,6 @@ func (s *SFTPStorage) Open(filename string) (io.ReadCloser, error) {
 
 func (s *SFTPStorage) Describe() string {
 	return fmt.Sprintf("sftp://%s/%s", s.server, s.prefix)
-}
-
-func (s *SFTPStorage) Disconnect() {
-	s.client.Close()
-	s.cmd.Process.Kill()
 }
 
 func (s *SFTPStorage) OpenWrite(filename string, append bool) (io.WriteCloser, error) {

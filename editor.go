@@ -167,8 +167,7 @@ func (e *regionEditor) HandlePointingInput(context *guigui.Context, widgetBounds
 			}
 		}
 		// Find the region that was clicked
-		click := cursor.Sub(ir.Min)
-		index := m.getClosestRegion(click, ir.Dx(), ir.Dy())
+		index := m.getClosestRegion(cursor, ir)
 		if index >= 0 {
 			if changeRegion >= 0 {
 				m.currentRegions.Regions[index].index = changeRegion

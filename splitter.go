@@ -62,6 +62,6 @@ func (s *splitter) CursorShape(context *guigui.Context, widgetBounds *guigui.Wid
 func (s *splitter) Draw(context *guigui.Context, widgetBounds *guigui.WidgetBounds, dst *ebiten.Image) {
 	b := widgetBounds.Bounds()
 	x := float32(b.Min.X+b.Max.X) / 2
-	width := float32(1 * context.Scale())
+	width := float32(context.Scale())
 	vector.StrokeLine(dst, x, float32(b.Min.Y), x, float32(b.Max.Y), width, color.RGBA{0x80, 0x80, 0x80, 0xff}, false)
 }

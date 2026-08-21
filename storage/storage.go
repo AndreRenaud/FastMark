@@ -14,7 +14,6 @@ type Storage interface {
 	OpenWrite(filename string, append bool) (io.WriteCloser, error)
 	Glob(directory string, pattern string) ([]string, error)
 	Describe() string
-	Disconnect()
 }
 
 type LocalStorage struct {
@@ -48,9 +47,7 @@ func NewStorage(directory string) Storage {
 }
 
 func (s LocalStorage) fullPath(filename string) string {
-	path := filepath.Clean(filename)
-	full := filepath.Join(filepath.Clean(s.prefix), path)
-	return full
+	return filepath.Join(s.prefix, filename)
 }
 
 func (s LocalStorage) Open(filename string) (io.ReadCloser, error) {
@@ -81,10 +78,6 @@ func (s LocalStorage) Describe() string {
 	return filepath.Clean(s.prefix)
 }
 
-func (s LocalStorage) Disconnect() {
-
-}
-
 func (d DummyStorage) Open(filename string) (io.ReadCloser, error) {
 	return nil, fmt.Errorf("dummy storage")
 }
@@ -97,5 +90,3 @@ func (d DummyStorage) Glob(directory string, pattern string) ([]string, error) {
 func (d DummyStorage) Describe() string {
 	return "dummy storage"
 }
-
-func (d DummyStorage) Disconnect() {}

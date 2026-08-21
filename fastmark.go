@@ -51,26 +51,25 @@ type Metadata struct {
 	Total          int
 	Categorised    int
 	Scanned        int
-	TotalRegions   int
 	CategoryTotals []int
 }
 
+// percent returns n as a percentage of total, or 0 when total is 0.
+func percent(n, total int) float64 {
+	if total == 0 {
+		return 0
+	}
+	return float64(n) * 100 / float64(total)
+}
+
 func (m Metadata) Summary() string {
-	return fmt.Sprintf("Total: %d, Scanned %d (%d%%) Categorised: %d (%d%%)", m.Total, m.Scanned, m.ScannedPercent(), m.Categorised, m.Percent())
+	return fmt.Sprintf("Total: %d, Scanned %d (%.0f%%) Categorised: %d (%.0f%%)",
+		m.Total, m.Scanned, percent(m.Scanned, m.Total), m.Categorised, percent(m.Categorised, m.Total))
 }
 
-func (m Metadata) Percent() int {
-	if m.Total == 0 {
-		return 0
-	}
-	return m.Categorised * 100 / m.Total
-}
-
-func (m Metadata) ScannedPercent() int {
-	if m.Total == 0 {
-		return 0
-	}
-	return m.Scanned * 100 / m.Total
+// labelFileFor returns the path of the Darknet label file for an image.
+func labelFileFor(filename string) string {
+	return filepath.Join("labels", strings.TrimSuffix(filename, filepath.Ext(filename))+".txt")
 }
 
 // decodedImage is the result of an asynchronous image decode. display is what
@@ -134,12 +133,8 @@ func (m *appModel) metadataSnapshot() Metadata {
 
 func (m *appModel) categorySummary(meta Metadata) string {
 	var summary strings.Builder
-	for i := range len(meta.CategoryTotals) {
-		percent := 0.0
-		if meta.Total > 0 {
-			percent = float64(meta.CategoryTotals[i]*100) / float64(meta.Total)
-		}
-		summary.WriteString(fmt.Sprintf("%s: %d %.1f%%\n", m.labelName(i), meta.CategoryTotals[i], percent))
+	for i, total := range meta.CategoryTotals {
+		fmt.Fprintf(&summary, "%s: %d %.1f%%\n", m.labelName(i), total, percent(total, meta.Total))
 	}
 	return summary.String()
 }
@@ -167,18 +162,15 @@ func (m *appModel) startMetadataScan() {
 			go func() {
 				defer wg.Done()
 				for file := range filesChan {
-					ext := filepath.Ext(file)
-					labelFile := filepath.Join("labels", strings.TrimSuffix(file, ext)+".txt")
 					// An error just means the image has no label file yet;
 					// count it as scanned but uncategorised.
-					regions, _ := LoadRegionList(backend, labelFile)
+					regions, _ := LoadRegionList(backend, labelFileFor(file))
 					m.metadataMu.Lock()
 					if m.metadataGen == gen {
 						for _, region := range regions.Regions {
 							if region.index >= 0 && region.index < len(m.metadata.CategoryTotals) {
 								m.metadata.CategoryTotals[region.index]++
 							}
-							m.metadata.TotalRegions++
 						}
 						if len(regions.Regions) > 0 {
 							m.metadata.Categorised++
@@ -297,11 +289,8 @@ func (m *appModel) loadFile(filename string) {
 		m.decoded <- decodedImage{gen: gen, source: img, display: display}
 	}()
 
-	ext := filepath.Ext(filename)
-	labelFile := filepath.Join("labels", strings.TrimSuffix(filename, ext)+".txt")
-
 	var err error
-	m.currentRegions, err = LoadRegionList(m.backend, labelFile)
+	m.currentRegions, err = LoadRegionList(m.backend, labelFileFor(filename))
 	if err != nil {
 		log.Printf("Error loading regions for %s: %s", filename, err)
 	}
@@ -325,13 +314,11 @@ func (m *appModel) regenerateDisplayImage() {
 	}()
 }
 
-func (m *appModel) getClosestRegion(click image.Point, imageWidth int, imageHeight int) int {
+// getClosestRegion returns the index of the region under cursor, where ir is
+// the rectangle the image is displayed in, or -1 if there is none.
+func (m *appModel) getClosestRegion(cursor image.Point, ir image.Rectangle) int {
 	for i, region := range m.currentRegions.Regions {
-		w := int(float32(region.width) * float32(imageWidth))
-		h := int(float32(region.height) * float32(imageHeight))
-		x := int(float32(region.xMid)*float32(imageWidth)) - w/2
-		y := int(float32(region.yMid)*float32(imageHeight)) - h/2
-		if click.X >= x && click.X <= x+w && click.Y >= y && click.Y <= y+h {
+		if cursor.In(regionRect(region, ir)) {
 			log.Printf("Clicked on region %d", i)
 			return i
 		}
@@ -339,14 +326,11 @@ func (m *appModel) getClosestRegion(click image.Point, imageWidth int, imageHeig
 
 	// If we're close to a region, and it's small, then assume we just missed and select it
 	for i, region := range m.currentRegions.Regions {
-		w := int(float32(region.width) * float32(imageWidth))
-		h := int(float32(region.height) * float32(imageHeight))
-		x := int(float32(region.xMid)*float32(imageWidth)) - w/2
-		y := int(float32(region.yMid)*float32(imageHeight)) - h/2
-		if w > 10 || h > 10 {
+		rr := regionRect(region, ir)
+		if rr.Dx() > 10 || rr.Dy() > 10 {
 			continue
 		}
-		if click.X >= x-5 && click.X <= x+w+5 && click.Y >= y-5 && click.Y <= y+h+5 {
+		if cursor.In(rr.Inset(-5)) {
 			log.Printf("Clicked near region %d", i)
 			return i
 		}
@@ -398,7 +382,6 @@ func (r *Root) WriteStateKey(context *guigui.Context, w *guigui.StateKeyWriter) 
 	w.WriteInt(meta.Total)
 	w.WriteInt(meta.Scanned)
 	w.WriteInt(meta.Categorised)
-	w.WriteInt(meta.TotalRegions)
 	for _, c := range meta.CategoryTotals {
 		w.WriteInt(c)
 	}
@@ -584,9 +567,7 @@ func (r *Root) HandleButtonInput(context *guigui.Context, widgetBounds *guigui.W
 		// Find the next image that's not labeled
 		for i := m.selectedIndex + direction; i < len(m.files) && i >= 0; i += direction {
 			filename := m.files[i]
-			ext := filepath.Ext(filename)
-			labelFile := filepath.Join("labels", strings.TrimSuffix(filename, ext)+".txt")
-			regions, err := LoadRegionList(m.backend, labelFile)
+			regions, err := LoadRegionList(m.backend, labelFileFor(filename))
 			if err != nil || len(regions.Regions) == 0 {
 				log.Printf("Found unlabeled image %s", filename)
 				r.selectFile(i)
