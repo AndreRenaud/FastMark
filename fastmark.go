@@ -133,15 +133,15 @@ func (m *appModel) metadataSnapshot() Metadata {
 }
 
 func (m *appModel) categorySummary(meta Metadata) string {
-	summary := ""
+	var summary strings.Builder
 	for i := range len(meta.CategoryTotals) {
 		percent := 0.0
 		if meta.Total > 0 {
 			percent = float64(meta.CategoryTotals[i]*100) / float64(meta.Total)
 		}
-		summary += fmt.Sprintf("%s: %d %.1f%%\n", m.labelName(i), meta.CategoryTotals[i], percent)
+		summary.WriteString(fmt.Sprintf("%s: %d %.1f%%\n", m.labelName(i), meta.CategoryTotals[i], percent))
 	}
-	return summary
+	return summary.String()
 }
 
 // startMetadataScan rescans every label file in the background, updating

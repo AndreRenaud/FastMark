@@ -97,7 +97,9 @@ func (e *regionEditor) Build(context *guigui.Context, adder *guigui.ChildAdder) 
 		region := m.currentRegions.Regions[i]
 		t := e.labelTexts.At(i)
 		t.SetValue(fmt.Sprintf("%s - %d", m.labelName(region.index), region.index))
-		t.SetColor(region.Color())
+		var style basicwidget.TextStyle
+		style.SetColor(region.Color())
+		t.SetBaseStyle(&style)
 	}
 	return nil
 }

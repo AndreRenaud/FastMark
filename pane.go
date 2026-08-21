@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"slices"
+	"strings"
 
 	"github.com/guigui-gui/guigui"
 	"github.com/guigui-gui/guigui/basicwidget"
@@ -88,17 +89,19 @@ func (p *editorPane) Build(context *guigui.Context, adder *guigui.ChildAdder) er
 		}
 	})
 
-	var regionSummary string
+	var regionSummary strings.Builder
 	for i, region := range m.currentRegions.Regions {
 		if i > 0 {
-			regionSummary += ", "
+			regionSummary.WriteString(", ")
 		}
-		regionSummary += fmt.Sprintf("%d: %s mid=%.3f,%.3f size=%.3fx%.3f", i, m.labelName(region.index), region.xMid, region.yMid, region.width, region.height)
+		regionSummary.WriteString(fmt.Sprintf("%d: %s mid=%.3f,%.3f size=%.3fx%.3f", i, m.labelName(region.index), region.xMid, region.yMid, region.width, region.height))
 	}
-	p.regionsText.SetValue(fmt.Sprintf("Regions: %s", regionSummary))
+	p.regionsText.SetValue(fmt.Sprintf("Regions: %s", regionSummary.String()))
 
 	p.drawingLabelText.SetValue(fmt.Sprintf("Drawing label: %d %s (Press 1-9 to select new type)", m.drawingIndex, m.labelName(m.drawingIndex)))
-	p.drawingLabelText.SetColor(RegionIndexColor(m.drawingIndex))
+	var drawingLabelStyle basicwidget.TextStyle
+	drawingLabelStyle.SetColor(RegionIndexColor(m.drawingIndex))
+	p.drawingLabelText.SetBaseStyle(&drawingLabelStyle)
 
 	p.editor.SetModel(m)
 
