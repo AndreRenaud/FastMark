@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -28,8 +29,8 @@ import (
 	"golang.org/x/image/draw"
 )
 
-// clipboardErr records whether clipboard.Init succeeded; Write panics if
-// called after a failed Init, so copyToClipboard checks it first.
+// clipboardErr records whether clipboard.Init succeeded, so copyToClipboard
+// can skip writing when there is no clipboard available.
 var clipboardErr error
 
 func copyToClipboard(text string) {
@@ -37,7 +38,9 @@ func copyToClipboard(text string) {
 		log.Printf("Clipboard unavailable: %s", clipboardErr)
 		return
 	}
-	clipboard.Write(clipboard.FmtText, []byte(text))
+	if _, err := clipboard.Write(context.Background(), clipboard.FmtText, []byte(text)); err != nil {
+		log.Printf("Error copying to clipboard: %s", err)
+	}
 }
 
 //go:embed icon-128.png
