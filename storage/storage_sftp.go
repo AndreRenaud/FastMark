@@ -79,6 +79,10 @@ func (s *SFTPStorage) OpenWrite(filename string, append bool) (io.WriteCloser, e
 		flags = os.O_WRONLY | os.O_CREATE | os.O_APPEND
 	}
 	fullname := s.fullPath(filename)
+
+	// Ensure the directory exists
+	s.client.MkdirAll(filepath.Dir(fullname))
+
 	return s.client.OpenFile(fullname, flags)
 }
 

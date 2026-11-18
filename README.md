@@ -43,6 +43,31 @@ target-dir/
 
 Where the `labels.txt` file contains the dataset categories, and the files in `labels/*.txt` match the names of the ones in `images/*.jpg, *.png`. The files in `labels/*.txt` will be automatically updated when a rectangle is drawn, and created if they do not already exist.
 
+Images may also be grouped one level down into subdirectories (e.g. one per camera), with the label files mirroring the same structure:
+
+```plaintext
+target-dir/
+   ├── labels.txt
+   ├── images/
+   │   └── <group>/
+   │       ├── *.jpg
+   │       └── *.png
+   └── labels/
+       └── <group>/
+           └── *.txt
+```
+
+The layout is detected automatically, and the two can be mixed.
+
+### Image lists
+To work on a subset of the dataset, pass `--image-list` with a file (relative to `--directory`) naming the images to load, one per line, instead of scanning `images/`:
+
+```sh
+fastmark --directory target-dir --image-list train.txt
+```
+
+Entries are relative to `images/` (the names shown in the file list), and may optionally start with `images/`. Blank lines and lines starting with `#` are ignored, and images are shown in the order they are listed. Choosing a different directory from within the app goes back to scanning.
+
 ## Keyboard shortcuts
 * 0-9: Select the label category that will be drawn for subsequent rectangles
 * up-arrow, k: move to previous image

@@ -89,6 +89,10 @@ type decodedImage struct {
 type appModel struct {
 	backend storage.Storage
 
+	// imageList, when set, names a file (relative to the dataset root)
+	// listing the images to load instead of scanning images/.
+	imageList string
+
 	files    []string
 	labels   []string
 	filesGen int
@@ -277,7 +281,7 @@ func (m *appModel) loadFile(filename string) {
 	autoContrast := m.autoContrast
 
 	go func() {
-		img, err := loadImage(backend, "images/"+filename)
+		img, err := loadImage(backend, filepath.Join("images", filename))
 		if err != nil {
 			log.Printf("Error loading image %s: %s", filename, err)
 			return
@@ -501,6 +505,9 @@ func (r *Root) Tick(context *guigui.Context, widgetBounds *guigui.WidgetBounds) 
 			m.imageGen++
 		case dir := <-m.chosenDirs:
 			m.backend = storage.NewStorage(dir)
+			// The image list belongs to the --directory dataset, so a
+			// newly chosen directory is scanned instead.
+			m.imageList = ""
 			r.updateFiles()
 		default:
 			return nil
@@ -627,22 +634,87 @@ func (m *appModel) selectDirectory() {
 	}()
 }
 
-func (r *Root) updateFiles() {
-	m := &r.model
-	m.files = nil
+func isImageFile(filename string) bool {
+	ext := strings.ToLower(filepath.Ext(filename))
+	return ext == ".jpg" || ext == ".jpeg" || ext == ".png"
+}
 
-	match, err := m.backend.Glob("images", "*")
+// listImages returns the images in the dataset as paths relative to images/.
+// Images may sit directly in images/, or be grouped one level down in
+// images/<group>/ with their labels mirrored in labels/<group>/. Both layouts
+// (or a mix of them) are detected automatically.
+func listImages(backend storage.Storage) ([]string, error) {
+	match, err := backend.Glob("images", "*")
 	if err != nil {
-		log.Printf("Error listing files: %s", err)
-	} else {
-		for _, f := range match {
-			ext := strings.ToLower(filepath.Ext(f))
-			if ext == ".jpg" || ext == ".jpeg" || ext == ".png" {
-				m.files = append(m.files, filepath.Base(f))
+		return nil, err
+	}
+	var files []string
+	for _, f := range match {
+		name := filepath.Base(f)
+		if isImageFile(name) {
+			files = append(files, name)
+			continue
+		}
+		// Possibly a group directory; globbing inside a plain file just
+		// returns no matches.
+		group, err := backend.Glob(filepath.Join("images", name), "*")
+		if err != nil {
+			log.Printf("Error listing files in %s: %s", name, err)
+			continue
+		}
+		for _, g := range group {
+			if isImageFile(g) {
+				files = append(files, filepath.Join(name, filepath.Base(g)))
 			}
 		}
 	}
-	slices.Sort(m.files)
+	slices.Sort(files)
+	return files, nil
+}
+
+// readImageList returns the images named in listFile (relative to the dataset
+// root), one per line, as paths relative to images/. Blank lines and lines
+// starting with # are ignored, and a leading images/ is stripped so entries
+// may be written relative to either directory. The order of the file is kept,
+// minus any duplicates.
+func readImageList(backend storage.Storage, listFile string) ([]string, error) {
+	f, err := backend.Open(listFile)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var files []string
+	seen := make(map[string]bool)
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		name := filepath.Clean(filepath.FromSlash(line))
+		name = strings.TrimPrefix(name, "images"+string(filepath.Separator))
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		files = append(files, name)
+	}
+	return files, scanner.Err()
+}
+
+func (r *Root) updateFiles() {
+	m := &r.model
+
+	var err error
+	if m.imageList != "" {
+		m.files, err = readImageList(m.backend, m.imageList)
+	} else {
+		m.files, err = listImages(m.backend)
+	}
+	if err != nil {
+		log.Printf("Error listing files: %s", err)
+	}
 
 	file, err := m.backend.Open("labels.txt")
 	if err != nil {
@@ -663,7 +735,12 @@ func (r *Root) updateFiles() {
 
 func main() {
 	directory := flag.String("directory", "", "Directory to load images from")
+	imageList := flag.String("image-list", "", "File, relative to --directory, listing the images to load (one per line) instead of scanning images/")
 	flag.Parse()
+
+	if *imageList != "" && *directory == "" {
+		log.Fatal("--image-list requires --directory")
+	}
 
 	if err := RegionsInit(); err != nil {
 		log.Printf("Error loading regions: %s", err)
@@ -679,6 +756,7 @@ func main() {
 	m.chosenDirs = make(chan string, 1)
 	if *directory != "" {
 		m.backend = storage.NewStorage(*directory)
+		m.imageList = *imageList
 	} else {
 		m.backend = &storage.DummyStorage{}
 	}
