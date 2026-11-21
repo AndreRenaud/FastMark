@@ -101,7 +101,10 @@ type appModel struct {
 	filesGen int
 
 	selectedIndex int
+	navDirection  int // +1 or -1: which way the selection last moved
 	filter        string
+
+	images *imageCache // decoded images around the selection
 
 	currentImage image.Image   // decoded source of the selected file
 	displayImage *ebiten.Image // texture currently shown by the editor
@@ -271,36 +274,71 @@ func capImageSize(img image.Image, maxDim int) image.Image {
 	return dst
 }
 
-// loadFile starts an asynchronous decode of filename and synchronously loads
-// its regions. The decode result arrives on m.decoded and is applied in
-// Root.Tick (ebiten.NewImageFromImage must run on the main goroutine).
+// loadFile shows filename, which must be m.files[m.selectedIndex], and
+// synchronously loads its regions. If the image was already read ahead it is
+// displayed immediately; otherwise the decode result arrives on m.decoded and
+// is applied in Root.Tick (ebiten.NewImageFromImage must run on the main
+// goroutine). Either way the neighbouring images are read ahead.
 func (m *appModel) loadFile(filename string) {
 	m.currentImage = nil
 	m.displayImage = nil
 	m.imageGen++
 	m.loadGen++
 	gen := m.loadGen
-	backend := m.backend
 	autoContrast := m.autoContrast
 
-	go func() {
-		img, err := loadImage(backend, filepath.Join("images", filename))
-		if err != nil {
-			log.Printf("Error loading image %s: %s", filename, err)
-			return
+	entry := m.images.retain(m.readAheadWindow(), autoContrast)
+	if entry != nil {
+		if entry.ready(autoContrast) {
+			if entry.err != nil {
+				log.Printf("Error loading image %s: %s", filename, entry.err)
+			} else {
+				m.currentImage = entry.img
+				m.displayImage = ebiten.NewImageFromImage(entry.display(autoContrast))
+			}
+		} else {
+			go func() {
+				entry.load()
+				if entry.err != nil {
+					log.Printf("Error loading image %s: %s", filename, entry.err)
+					return
+				}
+				m.decoded <- decodedImage{gen: gen, source: entry.img, display: entry.display(autoContrast)}
+			}()
 		}
-		display := img
-		if autoContrast {
-			display = autoContrastImage(img)
-		}
-		m.decoded <- decodedImage{gen: gen, source: img, display: display}
-	}()
+	}
 
 	var err error
 	m.currentRegions, err = LoadRegionList(m.backend, labelFileFor(filename))
 	if err != nil {
 		log.Printf("Error loading regions for %s: %s", filename, err)
 	}
+}
+
+// readAheadWindow returns the selected file followed by the neighbours worth
+// keeping decoded, most likely to be visited first: mostly those ahead in the
+// direction of travel, plus a couple behind for stepping back.
+func (m *appModel) readAheadWindow() []string {
+	dir := m.navDirection
+	if dir == 0 {
+		dir = 1
+	}
+	var window []string
+	add := func(i int) {
+		if i >= 0 && i < len(m.files) {
+			window = append(window, m.files[i])
+		}
+	}
+	add(m.selectedIndex)
+	for d := 1; d <= max(readAheadCount, readBehindCount); d++ {
+		if d <= readAheadCount {
+			add(m.selectedIndex + d*dir)
+		}
+		if d <= readBehindCount {
+			add(m.selectedIndex - d*dir)
+		}
+	}
+	return window
 }
 
 // regenerateDisplayImage re-applies the auto-contrast setting to the cached
@@ -596,6 +634,11 @@ func (r *Root) selectFile(i int) {
 		log.Printf("Invalid file index %d (max %d)", i, len(m.files))
 		return
 	}
+	if i < m.selectedIndex {
+		m.navDirection = -1
+	} else if i > m.selectedIndex {
+		m.navDirection = 1
+	}
 	m.selectedIndex = i
 	r.pane.editor.cancelDrawing()
 	// Set the model index before syncing the list so the OnItemSelected
@@ -732,6 +775,7 @@ func (r *Root) updateFiles() {
 	}
 
 	m.filesGen++
+	m.images = newImageCache(m.backend)
 	m.startMetadataScan()
 	r.selectFile(0)
 }

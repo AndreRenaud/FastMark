@@ -2,8 +2,10 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"image/color"
+	"io/fs"
 	"log"
 	"strconv"
 	"strings"
@@ -50,7 +52,13 @@ func LoadRegionList(backend storage.Storage, filename string) (RegionList, error
 	file, err := backend.Open(filename)
 	if err != nil {
 		log.Printf("Error opening file %s: %s", filename, err)
-		return RegionList{backend: backend, filename: filename}, err
+		r := RegionList{backend: backend, filename: filename}
+		// Remember that there is no label file yet, so revisiting the image
+		// doesn't cost another (possibly remote) lookup.
+		if cache != nil && errors.Is(err, fs.ErrNotExist) {
+			cache.Add(filename, r)
+		}
+		return r, err
 	}
 	defer file.Close()
 

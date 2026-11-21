@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"log"
@@ -64,9 +65,22 @@ func (s *SFTPStorage) fullPath(filename string) string {
 	return filepath.Join(s.prefix, filename)
 }
 
+// Open fetches the whole file into memory before returning. A plain
+// sftp.File costs one network round trip per Read call, which is very slow
+// under the small buffered reads the image decoders make; WriteTo instead
+// pipelines the read requests for the whole file concurrently.
 func (s *SFTPStorage) Open(filename string) (io.ReadCloser, error) {
-	fullname := s.fullPath(filename)
-	return s.client.Open(fullname)
+	f, err := s.client.Open(s.fullPath(filename))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var buf bytes.Buffer
+	if _, err := f.WriteTo(&buf); err != nil {
+		return nil, err
+	}
+	return io.NopCloser(&buf), nil
 }
 
 func (s *SFTPStorage) Describe() string {
