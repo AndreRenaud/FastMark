@@ -1,6 +1,6 @@
 module github.com/AndreRenaud/fastmark
 
-go 1.27.0
+go 1.27.4
 
 require (
 	github.com/guigui-gui/guigui v0.1.0
@@ -23,7 +23,7 @@ require (
 	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef // indirect
 	golang.design/x/x11 v0.2.0 // indirect
 	golang.org/x/crypto v0.59.0 // indirect
-	golang.org/x/exp/shiny v0.0.0-20261117202309-7a49493bfd90 // indirect
+	golang.org/x/exp/shiny v0.0.0-20261121134650-e1094eeca1b5 // indirect
 	golang.org/x/mobile v0.0.0-20261117202452-47699113848a // indirect
 	golang.org/x/sync v0.25.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect
